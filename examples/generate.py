@@ -23,8 +23,10 @@ def write(report, stem):
         (ROOT / "examples" / f"{stem}.{EXT[fmt]}").write_text(render(report), encoding="utf-8")
 
 
-tf = dr.Report(dr.load_plan_file(str(ROOT / "tests" / "fixtures" / "refresh_plan.json")),
-               "terraform", "./infra/prod", generated_at=STAMP)
+tf_findings = dr.load_plan_file(str(ROOT / "tests" / "fixtures" / "refresh_plan.json"))
+for f in tf_findings:
+    f.location = "./infra/prod"  # not the fixture's path on whoever's machine generates the samples
+tf = dr.Report(tf_findings, "terraform", "./infra/prod", generated_at=STAMP)
 write(tf, "terraform-drift")
 
 cfn = FakeCfn({"payments-api": [SG_DRIFT, LAMBDA_DRIFT, TAG_DRIFT], "batch-jobs": [DELETED_DRIFT], "network": []}, polls=0)

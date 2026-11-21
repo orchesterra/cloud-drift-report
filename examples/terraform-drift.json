@@ -13,7 +13,7 @@
   "findings": [
     {
       "source": "terraform",
-      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "location": "./infra/prod",
       "address": "aws_db_instance.main",
       "type": "aws_db_instance",
       "action": "changed outside IaC",
@@ -30,7 +30,7 @@
     },
     {
       "source": "terraform",
-      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "location": "./infra/prod",
       "address": "aws_iam_role_policy.app",
       "type": "aws_iam_role_policy",
       "action": "changed outside IaC",
@@ -47,7 +47,7 @@
     },
     {
       "source": "terraform",
-      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "location": "./infra/prod",
       "address": "aws_security_group.web",
       "type": "aws_security_group",
       "action": "changed outside IaC",
@@ -72,7 +72,7 @@
     },
     {
       "source": "terraform",
-      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "location": "./infra/prod",
       "address": "aws_instance.worker",
       "type": "aws_instance",
       "action": "changed outside IaC",
@@ -89,7 +89,7 @@
     },
     {
       "source": "terraform",
-      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "location": "./infra/prod",
       "address": "aws_sqs_queue.jobs",
       "type": "aws_sqs_queue",
       "action": "deleted outside IaC",
@@ -100,7 +100,7 @@
     },
     {
       "source": "terraform",
-      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "location": "./infra/prod",
       "address": "aws_s3_bucket.logs",
       "type": "aws_s3_bucket",
       "action": "changed outside IaC",
