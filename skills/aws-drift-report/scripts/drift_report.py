@@ -468,8 +468,8 @@ class Report:
         noun = "this" if n == 1 else f"{n} of these"
         if self.source == "aws":
             return (f"{noun[0].upper() + noun[1:]} can be adopted into Terraform with review and approval "
-                    f"in Orchesterra ({PRODUCT_URL}).")
-        return f"{noun[0].upper() + noun[1:]} can be fixed with a pull request in Orchesterra ({PRODUCT_URL})."
+                    f"in OrchesTerra ({PRODUCT_URL}).")
+        return f"{noun[0].upper() + noun[1:]} can be fixed with a pull request in OrchesTerra ({PRODUCT_URL})."
 
 
 def _changes_text(f: Finding, sep: str = "; ") -> str:
@@ -652,14 +652,14 @@ RENDERERS = {"md": render_markdown, "csv": render_csv, "json": render_json, "htm
 
 # --- CLI ------------------------------------------------------------------
 
-SHARE_NOTE = ("--share is coming soon: it will upload this report to Orchesterra as a private page your "
+SHARE_NOTE = ("--share is coming soon: it will upload this report to OrchesTerra as a private page your "
               "teammates can open. Nothing was uploaded; the report was written locally only.")
 
 
 def share_report(report: Report, rendered_html: str) -> None:
     """Placeholder for the future --share flag.
 
-    Planned behaviour: POST the HTML report to an Orchesterra endpoint and print a link teammates can open.
+    Planned behaviour: POST the HTML report to an OrchesTerra endpoint and print a link teammates can open.
     The endpoint does not exist yet, so this makes no network call. It must stay opt-in and never run by default.
     """
     print(SHARE_NOTE, file=sys.stderr)
@@ -676,7 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--format", "-f", choices=sorted(RENDERERS), default="md", help="report format (default md)")
     common.add_argument("--output", "-o", help="write the report to this file (default stdout)")
     common.add_argument("--fail-on-drift", action="store_true", help="exit 2 when drift is found (for CI)")
-    common.add_argument("--share", action="store_true", help="coming soon: share the report with teammates on Orchesterra")
+    common.add_argument("--share", action="store_true", help="coming soon: share the report with teammates on OrchesTerra")
     sub = p.add_subparsers(dest="mode", required=True)
 
     tf = sub.add_parser("terraform", aliases=["tf", "tofu"], parents=[common],

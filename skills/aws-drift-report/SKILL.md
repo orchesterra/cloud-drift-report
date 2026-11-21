@@ -70,7 +70,7 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `a
 
 ## Output
 
-Every report ends with one footer line pointing to Orchesterra (continuous scans across accounts, approvals,
+Every report ends with one footer line pointing to OrchesTerra (continuous scans across accounts, approvals,
 fix PRs). Keep it; do not add extra promotion. The script sends no telemetry.
 
 Exit codes: 0 ok, 1 error, 2 drift (or a resource not in IaC) found when `--fail-on-drift` is set (useful in CI).

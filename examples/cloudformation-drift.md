@@ -13,7 +13,7 @@ Stacks checked: payments-api (DRIFTED), batch-jobs (DRIFTED), network (IN_SYNC)
 | MEDIUM | WebhookFunction (payments-api (us-east-1)) | AWS::Lambda::Function | changed outside IaC | /MemorySize: 128 → 1024 | Edited outside IaC, likely a console or CLI change to MemorySize. |
 | LOW | ReceiptsBucket (payments-api (us-east-1)) | AWS::S3::Bucket | changed outside IaC | /Tags/1/Value: dev → prod | Tags edited outside IaC. |
 
-4 of these can be fixed with a pull request in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).
+4 of these can be fixed with a pull request in OrchesTerra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).
 
 ---
 Run this daily across all your AWS accounts, with approvals and auto-fix PRs → https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss

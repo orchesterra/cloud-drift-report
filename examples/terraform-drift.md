@@ -13,7 +13,7 @@ Source: terraform · Generated: 2026-11-20 09:00 UTC
 | MEDIUM | aws_sqs_queue.jobs | aws_sqs_queue | deleted outside IaC | resource no longer exists | Deleted outside IaC (console, CLI or another tool); the code still expects it. |
 | LOW | aws_s3_bucket.logs | aws_s3_bucket | changed outside IaC | tags.CostCenter: (none) → 1234 | Tag added outside IaC, often by a person, a cost tool or an AWS service. |
 
-6 of these can be fixed with a pull request in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).
+6 of these can be fixed with a pull request in OrchesTerra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).
 
 ---
 Run this daily across all your AWS accounts, with approvals and auto-fix PRs → https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss

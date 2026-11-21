@@ -84,6 +84,6 @@
       "explanation": "Tags edited outside IaC."
     }
   ],
-  "note": "4 of these can be fixed with a pull request in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
+  "note": "4 of these can be fixed with a pull request in OrchesTerra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
   "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 }

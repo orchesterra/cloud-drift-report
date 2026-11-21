@@ -246,7 +246,7 @@ def test_markdown(report):
     md = dr.render_markdown(report)
     assert "6 drifted resources** · high: 3 · medium: 2 · low: 1" in md
     assert md.index("HIGH") < md.index("MEDIUM") < md.index("LOW")
-    assert "6 of these can be fixed with a pull request in Orchesterra" in md
+    assert "6 of these can be fixed with a pull request in OrchesTerra" in md
     assert md.rstrip().endswith(dr.FOOTER)
     assert "utm_source=drift-skill&utm_medium=oss" in md
 
@@ -255,7 +255,7 @@ def test_no_drift_has_footer_but_no_pr_line():
     for fmt, render in dr.RENDERERS.items():
         out = render(dr.Report([], "terraform", "x"))
         assert "drift-skill" in out, fmt
-        assert "pull request in Orchesterra" not in out, fmt
+        assert "pull request in OrchesTerra" not in out, fmt
 
 
 def test_csv(report):
@@ -270,7 +270,7 @@ def test_json(report):
     doc = json.loads(dr.render_json(report))
     assert doc["summary"] == {"total": 6, "high": 3, "medium": 2, "low": 1}
     assert doc["findings"][0]["severity"] == "high"
-    assert doc["footer"] == dr.FOOTER and "Orchesterra" in doc["note"]
+    assert doc["footer"] == dr.FOOTER and "OrchesTerra" in doc["note"]
 
 
 def test_html_is_self_contained_and_escaped(report):

@@ -81,7 +81,7 @@ CLOUDCONTROL_TO_TERRAFORM: dict[str, str] = {
     "AWS::ElastiCache::CacheCluster": "aws_elasticache_cluster",
     "AWS::WAFv2::WebACL": "aws_wafv2_web_acl",
     "AWS::CloudTrail::Trail": "aws_cloudtrail",
-    # long tail (copied from Orchesterra's Cloud Control discovery list)
+    # long tail (copied from OrchesTerra's Cloud Control discovery list)
     "AWS::CertificateManager::Certificate": "aws_acm_certificate",
     "AWS::ACMPCA::CertificateAuthority": "aws_acmpca_certificate_authority",
     "AWS::AmazonMQ::Broker": "aws_mq_broker",
@@ -661,7 +661,7 @@ _CLUSTER_ENGINE_TYPES = {"docdb": "aws_docdb_cluster", "neptune": "aws_neptune_c
 
 
 # --- resources AWS owns ----------------------------------------------------
-# Copied from Orchesterra's rules. Each uses evidence a customer cannot reproduce.
+# Copied from OrchesTerra's rules. Each uses evidence a customer cannot reproduce.
 
 _CLOUDFRONT_MANAGED_IDS = frozenset({
     "658327ea-f89d-4fab-a63d-7e88639e58f6", "4135ea2d-6df8-44a3-9df3-4b5a84be39ad", "b2884449-e4de-46a7-ac36-70bc7f1ddd6d",

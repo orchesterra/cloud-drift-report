@@ -15,7 +15,7 @@ Coverage: 214 resources listed · 208 in IaC · 6 not in IaC · 131 AWS-owned sk
 | MEDIUM | orders-replay | us-east-1 | aws_sqs_queue | https://sqs.us-east-1.amazonaws.com/111111111111/orders-replay | Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool. |
 | LOW | /aws/lambda/resize-images | us-east-1 | aws_cloudwatch_log_group | arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/resize-images:* | Log group an AWS service created for one of your resources; manage it in IaC if you want retention and encryption under control. |
 
-6 of these can be adopted into Terraform with review and approval in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).
+6 of these can be adopted into Terraform with review and approval in OrchesTerra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).
 
 ---
 Run this daily across all your AWS accounts, with approvals and auto-fix PRs → https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss

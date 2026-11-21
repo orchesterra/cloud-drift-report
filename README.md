@@ -12,6 +12,10 @@ It ships three ways, from the same code:
 
 It never writes to AWS or to Terraform state, sends no telemetry and needs no account.
 
+> **Built by [OrchesTerra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).** This free tool is a one-off check from your laptop or CI.
+> OrchesTerra is the cloud platform that runs it continuously across all your AWS accounts and fixes what
+> it finds, with approvals. [Try the live demo](https://app.orchesterra.in/auth/login?demo=1&utm_source=drift-skill&utm_medium=oss) (no sign-up) or [see what it does](#orchesterra-the-full-platform).
+
 ## What it checks
 
 | Source | How |
@@ -153,7 +157,7 @@ Regenerate them with `python3 examples/generate.py`.
 
 ## Coming soon: `--share`
 
-`--share` will upload the HTML report to Orchesterra as a private page your teammates can open. It is not
+`--share` will upload the HTML report to OrchesTerra as a private page your teammates can open. It is not
 live yet: the flag currently prints a note and uploads nothing. It will always be opt-in.
 
 ## Why we built it
@@ -165,11 +169,42 @@ tells you about resources your code never knew about. This tool turns the first 
 finds the second by listing the account, and lets Claude or Cursor explain both.
 
 The account listing and the rules for what AWS owns come from
-[Orchesterra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss)'s own drift scanner, simplified
+[OrchesTerra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss)'s own drift scanner, simplified
 to run as a single command.
 
-It is a one-off check. If you want this every day across all your AWS accounts, with approvals and fix pull
-requests, that is what [Orchesterra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss) does.
+## OrchesTerra: the full platform
+
+This tool tells you what has drifted and what is not in code, once. [OrchesTerra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss) is a hosted
+platform for AWS that keeps doing it, fixes what it finds, and runs the rest of your infrastructure workflow
+in one place.
+
+| | aws-drift-report (free) | OrchesTerra (paid, cloud) |
+|---|---|---|
+| Drift in Terraform/OpenTofu and CloudFormation | ✅ one run | ✅ scheduled scans, history and trends |
+| Resources not in any IaC | ✅ one run | ✅ continuous, every AWS service |
+| Accounts and regions | one per run | many accounts and regions in one view |
+| Alerts | — | Slack and email |
+| Fix drift | — | restore to code, or accept the change into code |
+| Bring unmanaged resources into code | — | adopt into Terraform or a CloudFormation stack, with the import done for you |
+| Approvals and safety | — | approvals for risky changes, critical resources protected |
+| Team access | — | workspaces, roles and an audit log |
+
+**What else OrchesTerra does**
+
+- **Drift and adoption**: scans Terraform and CloudFormation on a schedule, and restores, accepts or adopts each finding with one click and an approval step.
+- **Provisioning**: AWS service forms and a visual designer that produce reviewed Terraform, with plan
+  previews, cost estimates and quota checks before anything is applied.
+- **Pull request checks**: the plan and its cost impact posted on GitHub, GitLab and Bitbucket pull requests.
+- **Policy and compliance**: a policy catalog with guardrails mapped to common frameworks, custom rules,
+  exceptions, and checks on existing infrastructure.
+- **Cost control**: budgets with alerts, cost estimates on every change, and auto-destroy for temporary
+  environments.
+- **Disaster recovery**: a readiness score per application and scheduled DR drills.
+- **Platform tools**: a private Terraform module registry, shared variable sets, scheduled runs, and an MCP
+  server so Claude and other AI tools can read your estate.
+
+Start with a 14-day free trial; paid plans start at $99 a month. See [pricing](https://www.orchesterra.in/pricing?utm_source=drift-skill&utm_medium=oss), or
+[open the live demo](https://app.orchesterra.in/auth/login?demo=1&utm_source=drift-skill&utm_medium=oss) to look around a sample workspace without signing up.
 
 ## Development
 

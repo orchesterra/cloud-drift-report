@@ -96,6 +96,6 @@
       "explanation": "Log group an AWS service created for one of your resources; manage it in IaC if you want retention and encryption under control."
     }
   ],
-  "note": "6 of these can be adopted into Terraform with review and approval in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
+  "note": "6 of these can be adopted into Terraform with review and approval in OrchesTerra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
   "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 }
