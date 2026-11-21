@@ -1,0 +1,101 @@
+{
+  "tool": "aws-drift-report",
+  "version": "0.2.0",
+  "source": "aws",
+  "target": "111111111111 (us-east-1)",
+  "generated_at": "2026-11-20 09:00 UTC",
+  "summary": {
+    "total": 6,
+    "high": 2,
+    "medium": 3,
+    "low": 1
+  },
+  "coverage": {
+    "listed": 214,
+    "in_iac": 208,
+    "not_in_iac": 6,
+    "aws_owned_skipped": 131,
+    "types_not_listed": 2,
+    "regions": [
+      "us-east-1"
+    ],
+    "iac_sources": [
+      "s3://acme-tf-state/prod/ (196 resources)",
+      "CloudFormation stacks in us-east-1 (12 resources)"
+    ],
+    "not_listed": {
+      "AWS::Lambda::LayerVersion (us-east-1)": "needs a parent resource to list; not checked",
+      "AWS::Logs::SubscriptionFilter (us-east-1)": "needs a parent resource to list; not checked"
+    }
+  },
+  "findings": [
+    {
+      "source": "aws",
+      "location": "global",
+      "address": "ci-deploy-user",
+      "type": "aws_iam_user",
+      "action": "not in IaC",
+      "changes": [],
+      "physical_id": "arn:aws:iam::111111111111:user/ci-deploy-user",
+      "severity": "high",
+      "explanation": "Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+    },
+    {
+      "source": "aws",
+      "location": "us-east-1",
+      "address": "temp-debug-sg",
+      "type": "aws_security_group",
+      "action": "not in IaC",
+      "changes": [],
+      "physical_id": "sg-0a1b2c3d4e5f60718",
+      "severity": "high",
+      "explanation": "Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+    },
+    {
+      "source": "aws",
+      "location": "us-east-1",
+      "address": "bastion",
+      "type": "aws_instance",
+      "action": "not in IaC",
+      "changes": [],
+      "physical_id": "i-0123456789abcdef0",
+      "severity": "medium",
+      "explanation": "Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+    },
+    {
+      "source": "aws",
+      "location": "us-east-1",
+      "address": "marketing-exports",
+      "type": "aws_s3_bucket",
+      "action": "not in IaC",
+      "changes": [],
+      "physical_id": "marketing-exports",
+      "severity": "medium",
+      "explanation": "Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+    },
+    {
+      "source": "aws",
+      "location": "us-east-1",
+      "address": "orders-replay",
+      "type": "aws_sqs_queue",
+      "action": "not in IaC",
+      "changes": [],
+      "physical_id": "https://sqs.us-east-1.amazonaws.com/111111111111/orders-replay",
+      "severity": "medium",
+      "explanation": "Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+    },
+    {
+      "source": "aws",
+      "location": "us-east-1",
+      "address": "/aws/lambda/resize-images",
+      "type": "aws_cloudwatch_log_group",
+      "action": "not in IaC",
+      "changes": [],
+      "physical_id": "arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/resize-images:*",
+      "severity": "low",
+      "explanation": "Log group an AWS service created for one of your resources; manage it in IaC if you want retention and encryption under control."
+    }
+  ],
+  "note": "6 of these can be adopted into Terraform with review and approval in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
+  "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+}

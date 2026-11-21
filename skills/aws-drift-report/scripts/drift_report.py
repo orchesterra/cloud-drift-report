@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """aws-drift-report: read-only drift report for Terraform/OpenTofu and CloudFormation.
 
-Finds resources that were changed or deleted outside infrastructure as code and
-writes a report as Markdown, CSV, JSON or a self-contained HTML page.
+Finds resources that were changed or deleted outside infrastructure as code, and
+resources that exist in AWS but no Terraform state or CloudFormation stack lists,
+and writes a report as Markdown, CSV, JSON or a self-contained HTML page.
 
 It never writes to AWS or to Terraform state:
   * Terraform/OpenTofu: runs `plan -refresh-only -lock=false` into a temporary
     plan file and reads it with `show -json` (or reads a plan JSON you give it).
   * CloudFormation: calls DetectStackDrift (which only records a drift check)
     and DescribeStackResourceDrifts.
+  * Not in IaC: lists the account with List/Describe calls (see aws_inventory.py)
+    and compares it with your state files and stacks.
 
-Needs Python 3.10+, the stdlib, and boto3 for CloudFormation only.
+Needs Python 3.10+, the stdlib, and boto3 for the AWS modes.
 No telemetry. Licence: Apache-2.0.
 """
 
@@ -31,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
@@ -39,6 +42,7 @@ FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-
 SEVERITIES = ("high", "medium", "low")
 CHANGED = "changed outside IaC"
 DELETED = "deleted outside IaC"
+UNMANAGED = "not in IaC"
 
 # --- severity rules -------------------------------------------------------
 
@@ -118,6 +122,8 @@ class Finding:
 def finalize(f: Finding) -> Finding:
     paths = [c.path for c in f.changes]
     f.severity = classify_severity(f.type, f.action, paths)
+    if f.action == UNMANAGED and f.type == "aws_cloudwatch_log_group" and f.address.startswith("/aws/"):
+        f.severity = "low"
     f.explanation = explain(f)
     return f
 
@@ -136,6 +142,12 @@ def _fmt_value(v: Any, limit: int = 120) -> str:
 
 def explain(f: Finding) -> str:
     """One plain-English guess at what happened."""
+    if f.action == UNMANAGED:
+        if f.type == "aws_cloudwatch_log_group" and f.address.startswith("/aws/"):
+            return ("Log group an AWS service created for one of your resources; manage it in IaC if you want "
+                    "retention and encryption under control.")
+        return ("Exists in AWS but no state file or stack checked lists it; likely created in the console, "
+                "the CLI or another tool.")
     if f.action == DELETED:
         return "Deleted outside IaC (console, CLI or another tool); the code still expects it."
     paths = [c.path for c in f.changes]
@@ -431,6 +443,13 @@ class Report:
     target: str
     generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
     checked: dict[str, str] = field(default_factory=dict)  # CloudFormation stack -> drift status
+    coverage: dict[str, Any] = field(default_factory=dict)  # not-in-IaC scan totals
+
+    def noun(self, n: int | None = None) -> str:
+        n = len(self.findings) if n is None else n
+        if self.source == "aws":
+            return f"{n} resource{'' if n == 1 else 's'} not in IaC"
+        return f"{n} drifted resource{'' if n == 1 else 's'}"
 
     def counts(self) -> dict[str, int]:
         c = {s: 0 for s in SEVERITIES}
@@ -447,12 +466,17 @@ class Report:
         if not n:
             return ""
         noun = "this" if n == 1 else f"{n} of these"
+        if self.source == "aws":
+            return (f"{noun[0].upper() + noun[1:]} can be adopted into Terraform with review and approval "
+                    f"in Orchesterra ({PRODUCT_URL}).")
         return f"{noun[0].upper() + noun[1:]} can be fixed with a pull request in Orchesterra ({PRODUCT_URL})."
 
 
 def _changes_text(f: Finding, sep: str = "; ") -> str:
     if f.action == DELETED:
         return "resource no longer exists"
+    if f.action == UNMANAGED:
+        return f"{f.physical_id} is in no state file or stack checked"
     if not f.changes:
         return "(no attribute details)"
     return sep.join(f"{c.path}: {_fmt_value(c.before)} → {_fmt_value(c.after)}" for c in f.changes)
@@ -462,21 +486,40 @@ def _md_cell(s: str) -> str:
     return s.replace("|", "\\|").replace("\n", " ")
 
 
+def coverage_line(cov: dict[str, Any]) -> str:
+    parts = [f"{cov.get('listed', 0)} resources listed", f"{cov.get('in_iac', 0)} in IaC",
+             f"{cov.get('not_in_iac', 0)} not in IaC", f"{cov.get('aws_owned_skipped', 0)} AWS-owned skipped"]
+    if cov.get("types_not_listed"):
+        parts.append(f"{cov['types_not_listed']} type/region pairs could not be listed (see JSON output)")
+    sources = cov.get("iac_sources") or []
+    return "Coverage: " + " · ".join(parts) + (f". Compared with: {', '.join(sources)}." if sources else ".")
+
+
 def render_markdown(r: Report) -> str:
     c = r.counts()
-    out = [f"# Drift report: {r.target}", "",
-           f"Source: {r.source} · Generated: {r.generated_at}", ""]
+    out = [f"# {'Not in IaC' if r.source == 'aws' else 'Drift report'}: {r.target}", "",
+           f"Source: {'AWS account scan' if r.source == 'aws' else r.source} · Generated: {r.generated_at}", ""]
     if r.findings:
-        out.append(f"**{len(r.findings)} drifted resource(s)** · high: {c['high']} · medium: {c['medium']} · low: {c['low']}")
+        out.append(f"**{r.noun()}** · high: {c['high']} · medium: {c['medium']} · low: {c['low']}")
+    elif r.source == "aws":
+        out.append("**Everything listed is in IaC.**")
     else:
         out.append("**No drift found.** Everything matches the code.")
+    if r.coverage:
+        out += ["", coverage_line(r.coverage)]
     if r.checked:
         out += ["", "Stacks checked: " + ", ".join(f"{k} ({v})" for k, v in r.checked.items())]
-    if r.findings:
+    if r.findings and r.source == "aws":
+        out += ["", "| Severity | Resource | Region | Type | ID or ARN | What probably happened |", "|---|---|---|---|---|---|"]
+        for f in r.sorted():
+            out.append("| " + " | ".join(_md_cell(x) for x in (
+                f.severity.upper(), f.address, f.location, f.type, f.physical_id, f.explanation)) + " |")
+        out += ["", r.pr_line()]
+    elif r.findings:
         out += ["", "| Severity | Resource | Type | Action | Changes (before → after) | What probably happened |",
                 "|---|---|---|---|---|---|"]
         for f in r.sorted():
-            res = f.address + (f" ({f.location})" if r.source == "cloudformation" else "")
+            res = f.address + (f" ({f.location})" if r.source in ("cloudformation", "aws") else "")
             out.append("| " + " | ".join(_md_cell(x) for x in (
                 f.severity.upper(), res, f.type, f.action, _changes_text(f, "<br>"), f.explanation)) + " |")
         out += ["", r.pr_line()]
@@ -508,6 +551,7 @@ def render_json(r: Report) -> str:
         "tool": "aws-drift-report", "version": __version__, "source": r.source, "target": r.target,
         "generated_at": r.generated_at, "summary": {"total": len(r.findings), **r.counts()},
         "stacks_checked": r.checked or None,
+        "coverage": r.coverage or None,
         "findings": [asdict(f) for f in r.sorted()],
         "note": r.pr_line() or None, "footer": FOOTER,
     }
@@ -559,42 +603,47 @@ def render_html(r: Report) -> str:
     for f in r.sorted():
         if f.action == DELETED:
             ch = "<em>resource no longer exists</em>"
+        elif f.action == UNMANAGED:
+            ch = f"<code>{e(f.physical_id)}</code>"
         elif not f.changes:
             ch = "<em>no attribute details</em>"
         else:
             ch = "<ul class=ch>" + "".join(
                 f"<li><code>{e(x.path)}</code><br><code>{e(_fmt_value(x.before, 300))}</code> "
                 f"<span class=arrow>→</span> <code>{e(_fmt_value(x.after, 300))}</code></li>" for x in f.changes) + "</ul>"
-        where = f"<div class=type>{e(f.location)}</div>" if r.source == "cloudformation" else ""
+        where = f"<div class=type>{e(f.location)}</div>" if r.source in ("cloudformation", "aws") else ""
         rows.append(
             f"<tr data-sev={f.severity}><td><span class='sev {f.severity}'>{f.severity.upper()}</span></td>"
             f"<td><code>{e(f.address)}</code>{where}<div class=type>{e(f.type)}</div></td>"
             f"<td>{e(f.action)}</td><td>{ch}</td><td>{e(f.explanation)}</td></tr>")
-    checked = ""
+    checked = f"<p class=meta>{e(coverage_line(r.coverage))}</p>" if r.coverage else ""
     if r.checked:
-        checked = "<p class=meta>Stacks checked: " + ", ".join(f"{e(k)} ({e(v)})" for k, v in r.checked.items()) + "</p>"
+        checked += "<p class=meta>Stacks checked: " + ", ".join(f"{e(k)} ({e(v)})" for k, v in r.checked.items()) + "</p>"
     if r.findings:
         body = (
             "<div class=tiles>"
-            f"<div class=tile><b>{len(r.findings)}</b><span>drifted resources</span></div>"
+            f"<div class=tile><b>{len(r.findings)}</b><span>{e(r.noun().split(' ', 1)[1])}</span></div>"
             + "".join(f"<div class='tile {s}'><b>{c[s]}</b><span>{s}</span></div>" for s in SEVERITIES)
             + "</div>" + checked +
             "<div class=filters role=group aria-label='Filter by severity'>"
             "<button data-sev=all aria-pressed=true>All</button>"
             + "".join(f"<button data-sev={s} aria-pressed=false>{s.title()}</button>" for s in SEVERITIES) +
             "</div><div class=wrap><table><thead><tr><th>Severity</th><th>Resource</th><th>Action</th>"
-            "<th>Changes (before → after)</th><th>What probably happened</th></tr></thead><tbody>"
+            + ("<th>ID or ARN</th>" if r.source == "aws" else "<th>Changes (before → after)</th>")
+            + "<th>What probably happened</th></tr></thead><tbody>"
             + "".join(rows) + "</tbody></table></div>"
             f"<p class=note>{_linkify(r.pr_line())}</p>")
     else:
-        body = checked + "<div class=ok><strong>No drift found.</strong> Everything matches the code.</div>"
+        ok = ("<strong>Everything listed is in IaC.</strong>" if r.source == "aws"
+              else "<strong>No drift found.</strong> Everything matches the code.")
+        body = checked + f"<div class=ok>{ok}</div>"
     footer_html = _linkify(FOOTER)
     return (
         "<!doctype html><html lang=en><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        f"<title>Drift report</title><style>{_HTML_CSS}</style></head><body><main>"
-        f"<h1>Drift report: {e(r.target)}</h1>"
-        f"<p class=meta>{e(r.source.title())} · generated {e(r.generated_at)} · read-only check by aws-drift-report {__version__}</p>"
+        f"<title>{'Not-in-IaC report' if r.source == 'aws' else 'Drift report'}</title><style>{_HTML_CSS}</style></head><body><main>"
+        f"<h1>{'Not in IaC' if r.source == 'aws' else 'Drift report'}: {e(r.target)}</h1>"
+        f"<p class=meta>{e('AWS account scan' if r.source == 'aws' else r.source.title())} · generated {e(r.generated_at)} · read-only check by aws-drift-report {__version__}</p>"
         f"{body}<footer>{footer_html}</footer></main><script>{_HTML_JS}</script></body></html>\n")
 
 
@@ -619,7 +668,8 @@ def share_report(report: Report, rendered_html: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="aws-drift-report",
-        description="Read-only drift report for Terraform/OpenTofu and CloudFormation on AWS.",
+        description="Read-only drift report for Terraform/OpenTofu and CloudFormation on AWS, "
+                    "plus resources that are in no IaC at all.",
         epilog=FOOTER)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     common = argparse.ArgumentParser(add_help=False)
@@ -643,7 +693,81 @@ def build_parser() -> argparse.ArgumentParser:
     cf.add_argument("--region", "-r", help="AWS region (default: profile/env region)")
     cf.add_argument("--profile", "-p", help="AWS profile (default: env/default credentials)")
     cf.add_argument("--timeout", type=float, default=600, help="seconds to wait per stack (default 600)")
+
+    un = sub.add_parser("unmanaged", aliases=["scan"], parents=[common],
+                        help="list the AWS account and report resources no state file or stack accounts for")
+    un.add_argument("--state", action="append", default=[],
+                    help="Terraform state: a .tfstate file, s3://bucket/key.tfstate, s3://bucket/prefix/ "
+                         "(every .tfstate under it) or an initialised Terraform directory; may repeat")
+    un.add_argument("--no-cloudformation", action="store_true",
+                    help="don't count resources in CloudFormation stacks as managed")
+    un.add_argument("--region", "-r", action="append", default=[], help="region to scan; may repeat (default: profile region)")
+    un.add_argument("--all-regions", action="store_true", help="scan every enabled region")
+    un.add_argument("--profile", "-p", help="AWS profile (default: env/default credentials)")
+    un.add_argument("--type", "-t", action="append", default=[],
+                    help="only these types (Terraform or CloudFormation name, substring match); may repeat")
+    un.add_argument("--workers", type=int, default=4, help="parallel list calls (default 4)")
     return p
+
+
+def aws_session(profile: str | None, region: str | None):
+    try:
+        import boto3
+    except ImportError as exc:
+        raise RuntimeError("This mode needs boto3: pip install boto3") from exc
+    session = boto3.Session(profile_name=profile, region_name=region)
+    if not session.region_name:
+        raise RuntimeError("No AWS region set. Pass --region or set AWS_REGION / a profile region.")
+    return session
+
+
+def run_unmanaged(args, log=print) -> Report:
+    import aws_inventory as inv_mod
+
+    session = aws_session(args.profile, args.region[0] if args.region else None)
+    regions = inv_mod.enabled_regions(session) if args.all_regions else (args.region or [session.region_name])
+    iac: list = []
+    sources: list[str] = []
+    for src in args.state:
+        docs = inv_mod.read_state_source(src, session=session)
+        count = 0
+        for label, doc in docs:
+            entries = inv_mod.parse_state(doc, label)
+            iac.extend(entries)
+            count += len(entries)
+        files = f"{len(docs)} state files, " if len(docs) != 1 else ""
+        sources.append(f"{src} ({files}{count} resources)")
+    if not args.no_cloudformation:
+        stack_total = 0
+        for region in regions:
+            entries = inv_mod.stack_entries(session, region, log=log)
+            stack_total += len(entries)
+            iac.extend(entries)
+        sources.append(f"CloudFormation stacks in {', '.join(regions)} ({stack_total} resources)")
+    if not args.state:
+        log("note: no --state given, so only CloudFormation stacks count as IaC. Pass --state to include Terraform.",
+            file=sys.stderr)
+    cc_types = list(inv_mod.CLOUDCONTROL_TO_TERRAFORM)
+    if args.type:
+        wanted = [t.lower() for t in args.type]
+        cc_types = [c for c in cc_types if any(w in c.lower() or w in inv_mod.terraform_type(c) for w in wanted)]
+        if not cc_types:
+            raise RuntimeError(f"No supported type matches {', '.join(args.type)}.")
+    inventory = inv_mod.list_inventory(session, regions, cc_types, workers=args.workers, log=log)
+    result = inv_mod.match(inventory, iac)
+    findings = [finalize(Finding(
+        source="aws", location=res.region or "global", address=res.name or res.identifier, type=res.tf_type,
+        action=UNMANAGED, physical_id=res.arn or res.identifier)) for res in result.unmanaged]
+    try:
+        account = session.client("sts").get_caller_identity()["Account"]
+    except Exception:
+        account = "AWS account"
+    coverage = {
+        "listed": len(inventory.resources), "in_iac": len(result.managed), "not_in_iac": len(result.unmanaged),
+        "aws_owned_skipped": len(inventory.owned), "types_not_listed": len(inventory.not_listed),
+        "regions": regions, "iac_sources": sources, "not_listed": inventory.not_listed or None,
+    }
+    return Report(findings, "aws", f"{account} ({', '.join(regions)})", coverage=coverage)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -657,6 +781,8 @@ def main(argv: list[str] | None = None) -> int:
                 extra = [f"-var-file={v}" for v in args.var_file]
                 findings, target = run_terraform(directory, args.binary, extra), directory
             report = Report(findings, "terraform", target)
+        elif args.mode in ("unmanaged", "scan"):
+            report = run_unmanaged(args)
         else:
             cfn, region = cfn_client(args.profile, args.region)
             findings, statuses = run_cloudformation(cfn, args.stack, region, args.timeout)
@@ -673,7 +799,7 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.output, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
         c = report.counts()
-        print(f"Wrote {args.output}: {len(report.findings)} drifted (high {c['high']}, medium {c['medium']}, "
+        print(f"Wrote {args.output}: {report.noun()} (high {c['high']}, medium {c['medium']}, "
               f"low {c['low']}).", file=sys.stderr)
     else:
         sys.stdout.write(text)

@@ -1,6 +1,6 @@
 {
   "tool": "aws-drift-report",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "source": "cloudformation",
   "target": "all stacks in us-east-1",
   "generated_at": "2026-11-20 09:00 UTC",

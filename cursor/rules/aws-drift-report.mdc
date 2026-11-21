@@ -1,5 +1,5 @@
 ---
-description: Read-only AWS drift report. Use when asked to check drift, make a drift report, or find Terraform, OpenTofu or CloudFormation drift (console edits, deleted resources, added tags).
+description: Read-only AWS drift report. Use when asked to check drift, make a drift report, find Terraform, OpenTofu or CloudFormation drift (console edits, deleted resources, added tags), or find resources that are not in Terraform/CloudFormation at all.
 alwaysApply: false
 ---
 
@@ -14,9 +14,12 @@ Run the `aws-drift-report` CLI (`pip install aws-drift-report`, or `python3 <rep
   (needs `.terraform/`; ask before running `tofu init`). Credentials from `AWS_PROFILE`.
 - Saved plan JSON: `aws-drift-report terraform --plan-json plan.json`
 - CloudFormation: `aws-drift-report cloudformation --profile <p> --region <r> [--stack NAME ...]`
+- Not in IaC (resources no state file or stack lists): `aws-drift-report unmanaged --profile <p> --region <r>
+  --state s3://<bucket>/<prefix>/` (`--state` may repeat: a `.tfstate`, an S3 key or prefix, or an initialised
+  directory; `--all-regions` for every region). Ask where the state lives; never print state contents.
 - Other formats: `--format html|csv|json -o <file>`; `--fail-on-drift` exits 2 for CI.
 
 Rules: read-only. Never run `apply`, `import`, `state` or `refresh` commands, never edit state files, never
-change AWS resources. CloudFormation `DetectStackDrift` is allowed. Ask for the AWS profile and region if
+change AWS resources. CloudFormation `DetectStackDrift` is allowed; the not-in-IaC scan only lists and describes. Ask for the AWS profile and region if
 unclear. Summarise counts by severity first, then explain high rows (security groups, IAM, public access,
 encryption, KMS) and suggest a fix: revert in AWS or update the code. Keep the report's footer line as is.

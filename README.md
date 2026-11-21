@@ -1,9 +1,10 @@
 # aws-drift-report
 
 A read-only drift report for AWS. It finds resources that someone changed or deleted outside your
-Terraform, OpenTofu or CloudFormation code, ranks them by severity and explains each one in plain English.
+Terraform, OpenTofu or CloudFormation code, and resources that exist in your account but no state file or
+stack knows about. It ranks them by severity and explains each one in plain English.
 
-It ships three ways, from one Python file:
+It ships three ways, from the same code:
 
 - a **command-line tool** (`aws-drift-report`)
 - a **Claude skill** (Claude Code, Claude desktop and claude.ai)
@@ -17,23 +18,32 @@ It never writes to AWS or to Terraform state, sends no telemetry and needs no ac
 |---|---|
 | Terraform / OpenTofu | Runs `plan -refresh-only -lock=false` into a temporary plan file and reads it with `show -json`, or reads a plan JSON you already have. |
 | CloudFormation | Runs drift detection on the stacks you name (or every stack in a region), waits for it, then reads the resource drifts. |
+| Not in IaC | Lists the account (about 170 resource types, mostly through the AWS Cloud Control API) and compares it with your Terraform state files and CloudFormation stacks. Anything neither lists is reported. |
 
 For each drifted resource you get the address, type, action (changed or deleted outside IaC), each changed
-attribute (before → after), a severity, and a short "what probably happened".
+attribute (before → after), a severity, and a short "what probably happened". For each resource not in IaC you
+get its name, region, type, ID or ARN and a severity.
+
+The not-in-IaC scan skips what AWS creates itself: default VPCs and their subnets, route tables and security
+groups, service-linked roles, AWS-managed keys and policies, and resources another AWS service owns (an EKS
+cluster security group, an RDS-managed secret, instances launched by an Auto Scaling group). They are counted
+in the report's coverage line but not listed as findings. Types it could not list (access denied, or the type
+needs a parent resource) are named in the JSON output, so you know what was not checked.
 
 **Severity**
 
 - **High**: security relevant. Security groups and rules, NACLs, IAM, bucket policies, public access,
   ACLs, encryption, KMS, resource policies, passwords.
-- **Medium**: any other change that alters behaviour, and deleted resources.
-- **Low**: tags only.
+- **Medium**: any other change that alters behaviour, deleted resources, and most resources not in IaC.
+- **Low**: tags only, and log groups an AWS service created for one of your resources.
 
 Formats: Markdown (default), CSV, JSON and a self-contained HTML page (no external assets, light and dark mode,
 severity filter).
 
 ## Install
 
-You need Python 3.10+. CloudFormation mode also needs `boto3`; Terraform mode needs `tofu` or `terraform` on PATH.
+You need Python 3.10+. The CloudFormation and not-in-IaC modes also need `boto3`; Terraform mode needs `tofu`
+or `terraform` on PATH.
 
 ### Command-line tool
 
@@ -55,8 +65,8 @@ Copy the skill folder into your Claude skills directory:
 cp -r skills/aws-drift-report ~/.claude/skills/
 ```
 
-Then ask Claude: *"check drift in ./infra"*, *"make a drift report for my CloudFormation stacks in us-east-1"*
-or *"what changed outside Terraform?"*
+Then ask Claude: *"check drift in ./infra"*, *"make a drift report for my CloudFormation stacks in us-east-1"*,
+*"what changed outside Terraform?"* or *"what in this account isn't in Terraform?"*
 
 ### Cursor skill
 
@@ -86,18 +96,29 @@ aws-drift-report terraform --plan-json plan.json --format html -o drift.html
 aws-drift-report cloudformation --profile prod --region us-east-1 --stack payments-api --stack network
 aws-drift-report cloudformation --profile prod --region us-east-1 --format csv -o drift.csv
 
-# CI: exit code 2 when drift is found
+# Not in IaC: compare us-east-1 with every state file under an S3 prefix and all CloudFormation stacks
+aws-drift-report unmanaged --profile prod --region us-east-1 --state s3://acme-tf-state/prod/
+
+# Not in IaC across every enabled region, several state sources, HTML report
+aws-drift-report unmanaged --profile prod --all-regions \
+  --state s3://acme-tf-state/ --state ./legacy/terraform.tfstate --format html -o not-in-iac.html
+
+# CI: exit code 2 when drift (or a resource not in IaC) is found
 aws-drift-report terraform --dir ./infra --fail-on-drift
 ```
 
-Exit codes: `0` ok, `1` error, `2` drift found with `--fail-on-drift`.
+Exit codes: `0` ok, `1` error, `2` drift or a resource not in IaC found with `--fail-on-drift`.
+
+`--state` takes a local `.tfstate` file, `s3://bucket/key.tfstate`, `s3://bucket/prefix/` (every `.tfstate`
+under it) or an initialised Terraform directory (read with `state pull`). It may repeat. Without `--state`,
+only CloudFormation stacks count as IaC.
 
 ## Sample output
 
 ```text
 # Drift report: ./infra/prod
 
-**6 drifted resource(s)** · high: 3 · medium: 2 · low: 1
+**6 drifted resources** · high: 3 · medium: 2 · low: 1
 
 | Severity | Resource                   | Action              | Changes (before → after)                                   | What probably happened |
 |----------|----------------------------|---------------------|------------------------------------------------------------|------------------------|
@@ -112,7 +133,9 @@ Full samples in every format are in [`examples/`](examples/): Terraform
 ([md](examples/terraform-drift.md), [csv](examples/terraform-drift.csv), [json](examples/terraform-drift.json),
 [html](examples/terraform-drift.html)) and CloudFormation
 ([md](examples/cloudformation-drift.md), [csv](examples/cloudformation-drift.csv),
-[json](examples/cloudformation-drift.json), [html](examples/cloudformation-drift.html)).
+[json](examples/cloudformation-drift.json), [html](examples/cloudformation-drift.html)) and not in IaC
+([md](examples/not-in-iac.md), [csv](examples/not-in-iac.csv), [json](examples/not-in-iac.json),
+[html](examples/not-in-iac.html)).
 Regenerate them with `python3 examples/generate.py`.
 
 ## Safety
@@ -121,8 +144,12 @@ Regenerate them with `python3 examples/generate.py`.
   `refresh`. The plan file goes to a temporary folder and is deleted. Sensitive values are masked.
 - CloudFormation: `DetectStackDrift`, `DescribeStackDriftDetectionStatus`, `DescribeStackResourceDrifts`
   and `ListStacks`. Drift detection records a check on the stack; nothing else changes.
-- Uses your own AWS profile and region. A read-only role is enough, plus `cloudformation:DetectStackDrift`
-  and whatever read permissions your Terraform provider needs to refresh.
+- Not in IaC: only List, Describe and Get calls (Cloud Control `ListResources`, plus a few service list calls
+  such as `ec2:DescribeVpcs` and `iam:ListRoles`), `cloudformation:ListStackResources`, and reads of the state
+  files you name. State files are read in memory and never printed or saved.
+- Uses your own AWS profile and region. The AWS managed `ReadOnlyAccess` policy is enough, plus
+  `cloudformation:DetectStackDrift` for CloudFormation drift and whatever read permissions your Terraform
+  provider needs to refresh.
 
 ## Coming soon: `--share`
 
@@ -133,8 +160,13 @@ live yet: the flag currently prints a note and uploads nothing. It will always b
 
 [driftctl](https://github.com/snyk/driftctl) used to be the go-to free drift checker, but it is no longer
 actively maintained. Terraform and OpenTofu can now detect drift themselves with `plan -refresh-only`, and
-CloudFormation has drift detection built in, but both print raw output that is hard to triage. This tool turns
-that into a short, ranked report a human can act on, and lets Claude or Cursor explain it.
+CloudFormation has drift detection built in, but both print raw output that is hard to triage, and neither
+tells you about resources your code never knew about. This tool turns the first into a short, ranked report,
+finds the second by listing the account, and lets Claude or Cursor explain both.
+
+The account listing and the rules for what AWS owns come from
+[Orchesterra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss)'s own drift scanner, simplified
+to run as a single command.
 
 It is a one-off check. If you want this every day across all your AWS accounts, with approvals and fix pull
 requests, that is what [Orchesterra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss) does.
@@ -146,7 +178,8 @@ pip install -e '.[test]'
 pytest
 ```
 
-The tests use a fake refresh-only plan and a fake CloudFormation client, so they need no AWS access.
+The tests use a fake refresh-only plan, a fake CloudFormation client and a fake AWS session, so they need no
+AWS access.
 
 ## Licence
 

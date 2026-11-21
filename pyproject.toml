@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-drift-report"
-version = "0.1.0"
-description = "Read-only drift report for Terraform/OpenTofu and CloudFormation on AWS"
+version = "0.2.0"
+description = "Read-only drift and not-in-IaC report for Terraform/OpenTofu and CloudFormation on AWS"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = ["boto3"]
-keywords = ["aws", "terraform", "opentofu", "cloudformation", "drift", "driftctl"]
+keywords = ["aws", "terraform", "opentofu", "cloudformation", "drift", "driftctl", "unmanaged", "clickops"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Environment :: Console",
@@ -29,7 +29,7 @@ test = ["pytest"]
 # One source file serves the CLI, the Claude skill and the Cursor skill.
 [tool.setuptools]
 package-dir = { "" = "skills/aws-drift-report/scripts" }
-py-modules = ["drift_report"]
+py-modules = ["drift_report", "aws_inventory"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

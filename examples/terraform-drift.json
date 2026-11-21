@@ -1,6 +1,6 @@
 {
   "tool": "aws-drift-report",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "source": "terraform",
   "target": "./infra/prod",
   "generated_at": "2026-11-20 09:00 UTC",

@@ -2,7 +2,7 @@
 
 Source: terraform · Generated: 2026-11-20 09:00 UTC
 
-**6 drifted resource(s)** · high: 3 · medium: 2 · low: 1
+**6 drifted resources** · high: 3 · medium: 2 · low: 1
 
 | Severity | Resource | Type | Action | Changes (before → after) | What probably happened |
 |---|---|---|---|---|---|

@@ -244,7 +244,7 @@ def report():
 
 def test_markdown(report):
     md = dr.render_markdown(report)
-    assert "6 drifted resource(s)** · high: 3 · medium: 2 · low: 1" in md
+    assert "6 drifted resources** · high: 3 · medium: 2 · low: 1" in md
     assert md.index("HIGH") < md.index("MEDIUM") < md.index("LOW")
     assert "6 of these can be fixed with a pull request in Orchesterra" in md
     assert md.rstrip().endswith(dr.FOOTER)

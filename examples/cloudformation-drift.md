@@ -2,7 +2,7 @@
 
 Source: cloudformation · Generated: 2026-11-20 09:00 UTC
 
-**4 drifted resource(s)** · high: 1 · medium: 2 · low: 1
+**4 drifted resources** · high: 1 · medium: 2 · low: 1
 
 Stacks checked: payments-api (DRIFTED), batch-jobs (DRIFTED), network (IN_SYNC)
 

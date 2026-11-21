@@ -1,0 +1,9 @@
+severity,source,location,address,type,action,physical_id,attribute,before,after,what_probably_happened
+high,aws,global,ci-deploy-user,aws_iam_user,not in IaC,arn:aws:iam::111111111111:user/ci-deploy-user,,,,"Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+high,aws,us-east-1,temp-debug-sg,aws_security_group,not in IaC,sg-0a1b2c3d4e5f60718,,,,"Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+medium,aws,us-east-1,bastion,aws_instance,not in IaC,i-0123456789abcdef0,,,,"Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+medium,aws,us-east-1,marketing-exports,aws_s3_bucket,not in IaC,marketing-exports,,,,"Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+medium,aws,us-east-1,orders-replay,aws_sqs_queue,not in IaC,https://sqs.us-east-1.amazonaws.com/111111111111/orders-replay,,,,"Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+low,aws,us-east-1,/aws/lambda/resize-images,aws_cloudwatch_log_group,not in IaC,arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/resize-images:*,,,,Log group an AWS service created for one of your resources; manage it in IaC if you want retention and encryption under control.
+
+"# Run this daily across all your AWS accounts, with approvals and auto-fix PRs → https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
