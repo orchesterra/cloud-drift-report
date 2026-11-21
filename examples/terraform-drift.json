@@ -1,0 +1,121 @@
+{
+  "tool": "aws-drift-report",
+  "version": "0.1.0",
+  "source": "terraform",
+  "target": "./infra/prod",
+  "generated_at": "2026-11-20 09:00 UTC",
+  "summary": {
+    "total": 6,
+    "high": 3,
+    "medium": 2,
+    "low": 1
+  },
+  "findings": [
+    {
+      "source": "terraform",
+      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "address": "aws_db_instance.main",
+      "type": "aws_db_instance",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "password",
+          "before": "(sensitive)",
+          "after": "(sensitive, changed)"
+        }
+      ],
+      "physical_id": "main",
+      "severity": "high",
+      "explanation": "Password or secret changed outside IaC (a console reset or manual rotation)."
+    },
+    {
+      "source": "terraform",
+      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "address": "aws_iam_role_policy.app",
+      "type": "aws_iam_role_policy",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "policy",
+          "before": "{\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Allow\",\"Resource\":\"*\"}]}",
+          "after": "{\"Statement\":[{\"Action\":\"s3:*\",\"Effect\":\"Allow\",\"Resource\":\"*\"}]}"
+        }
+      ],
+      "physical_id": "app:app",
+      "severity": "high",
+      "explanation": "Policy or permissions edited outside IaC; review who gained or lost access."
+    },
+    {
+      "source": "terraform",
+      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "address": "aws_security_group.web",
+      "type": "aws_security_group",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "ingress[1]",
+          "before": null,
+          "after": {
+            "cidr_blocks": [
+              "0.0.0.0/0"
+            ],
+            "from_port": 22,
+            "to_port": 22,
+            "protocol": "tcp",
+            "description": "temp ssh"
+          }
+        }
+      ],
+      "physical_id": "arn:aws:ec2:us-east-1:111122223333:security-group/sg-0a1b2c3d4e5f60718",
+      "severity": "high",
+      "explanation": "Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0)."
+    },
+    {
+      "source": "terraform",
+      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "address": "aws_instance.worker",
+      "type": "aws_instance",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "instance_type",
+          "before": "t3.small",
+          "after": "t3.large"
+        }
+      ],
+      "physical_id": "i-0123456789abcdef0",
+      "severity": "medium",
+      "explanation": "Edited outside IaC, likely a console or CLI change to instance_type."
+    },
+    {
+      "source": "terraform",
+      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "address": "aws_sqs_queue.jobs",
+      "type": "aws_sqs_queue",
+      "action": "deleted outside IaC",
+      "changes": [],
+      "physical_id": "arn:aws:sqs:us-east-1:111122223333:jobs",
+      "severity": "medium",
+      "explanation": "Deleted outside IaC (console, CLI or another tool); the code still expects it."
+    },
+    {
+      "source": "terraform",
+      "location": "/Users/macbookpro/Documents/project/orchesterra-skills/tests/fixtures/refresh_plan.json",
+      "address": "aws_s3_bucket.logs",
+      "type": "aws_s3_bucket",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "tags.CostCenter",
+          "before": null,
+          "after": "1234"
+        }
+      ],
+      "physical_id": "acme-logs",
+      "severity": "low",
+      "explanation": "Tag added outside IaC, often by a person, a cost tool or an AWS service."
+    }
+  ],
+  "note": "6 of these can be fixed with a pull request in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
+  "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+}

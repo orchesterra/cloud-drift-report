@@ -1,0 +1,89 @@
+{
+  "tool": "aws-drift-report",
+  "version": "0.1.0",
+  "source": "cloudformation",
+  "target": "all stacks in us-east-1",
+  "generated_at": "2026-11-20 09:00 UTC",
+  "summary": {
+    "total": 4,
+    "high": 1,
+    "medium": 2,
+    "low": 1
+  },
+  "stacks_checked": {
+    "payments-api": "DRIFTED",
+    "batch-jobs": "DRIFTED",
+    "network": "IN_SYNC"
+  },
+  "findings": [
+    {
+      "source": "cloudformation",
+      "location": "payments-api (us-east-1)",
+      "address": "WebSG",
+      "type": "AWS::EC2::SecurityGroup",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "/SecurityGroupIngress/1",
+          "before": null,
+          "after": {
+            "CidrIp": "0.0.0.0/0",
+            "FromPort": 22,
+            "IpProtocol": "tcp",
+            "ToPort": 22
+          }
+        }
+      ],
+      "physical_id": "sg-0f1e2d3c4b5a69788",
+      "severity": "high",
+      "explanation": "Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0)."
+    },
+    {
+      "source": "cloudformation",
+      "location": "batch-jobs (us-east-1)",
+      "address": "JobsQueue",
+      "type": "AWS::SQS::Queue",
+      "action": "deleted outside IaC",
+      "changes": [],
+      "physical_id": "https://sqs.us-east-1.amazonaws.com/111122223333/batch-jobs",
+      "severity": "medium",
+      "explanation": "Deleted outside IaC (console, CLI or another tool); the code still expects it."
+    },
+    {
+      "source": "cloudformation",
+      "location": "payments-api (us-east-1)",
+      "address": "WebhookFunction",
+      "type": "AWS::Lambda::Function",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "/MemorySize",
+          "before": 128,
+          "after": 1024
+        }
+      ],
+      "physical_id": "payments-api-webhook",
+      "severity": "medium",
+      "explanation": "Edited outside IaC, likely a console or CLI change to MemorySize."
+    },
+    {
+      "source": "cloudformation",
+      "location": "payments-api (us-east-1)",
+      "address": "ReceiptsBucket",
+      "type": "AWS::S3::Bucket",
+      "action": "changed outside IaC",
+      "changes": [
+        {
+          "path": "/Tags/1/Value",
+          "before": "dev",
+          "after": "prod"
+        }
+      ],
+      "physical_id": "acme-payments-receipts",
+      "severity": "low",
+      "explanation": "Tags edited outside IaC."
+    }
+  ],
+  "note": "4 of these can be fixed with a pull request in Orchesterra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
+  "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+}

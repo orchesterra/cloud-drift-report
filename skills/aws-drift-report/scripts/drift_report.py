@@ -1,0 +1,686 @@
+#!/usr/bin/env python3
+"""aws-drift-report: read-only drift report for Terraform/OpenTofu and CloudFormation.
+
+Finds resources that were changed or deleted outside infrastructure as code and
+writes a report as Markdown, CSV, JSON or a self-contained HTML page.
+
+It never writes to AWS or to Terraform state:
+  * Terraform/OpenTofu: runs `plan -refresh-only -lock=false` into a temporary
+    plan file and reads it with `show -json` (or reads a plan JSON you give it).
+  * CloudFormation: calls DetectStackDrift (which only records a drift check)
+    and DescribeStackResourceDrifts.
+
+Needs Python 3.10+, the stdlib, and boto3 for CloudFormation only.
+No telemetry. Licence: Apache-2.0.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import html
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Iterable
+
+__version__ = "0.1.0"
+
+PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
+
+SEVERITIES = ("high", "medium", "low")
+CHANGED = "changed outside IaC"
+DELETED = "deleted outside IaC"
+
+# --- severity rules -------------------------------------------------------
+
+# Resource types whose drift is security relevant whatever changed.
+_SECURITY_TYPE_HINTS = (
+    # Terraform
+    "aws_security_group", "aws_vpc_security_group_", "aws_network_acl", "aws_iam_",
+    "aws_s3_bucket_policy", "aws_s3_bucket_public_access_block", "aws_s3_account_public_access_block",
+    "aws_s3_bucket_acl", "aws_s3_bucket_server_side_encryption_configuration", "aws_kms_",
+    "aws_lambda_permission", "aws_sns_topic_policy", "aws_sqs_queue_policy", "aws_ecr_repository_policy",
+    "aws_secretsmanager_secret_policy", "aws_organizations_policy", "aws_wafv2_",
+    # CloudFormation
+    "AWS::EC2::SecurityGroup", "AWS::EC2::NetworkAcl", "AWS::IAM::", "AWS::S3::BucketPolicy",
+    "AWS::KMS::", "AWS::Lambda::Permission", "AWS::SNS::TopicPolicy", "AWS::SQS::QueuePolicy",
+    "AWS::SecretsManager::ResourcePolicy", "AWS::WAFv2::",
+)
+
+# Attribute/property names that make a change security relevant on any type.
+_SECURITY_ATTR_HINTS = (
+    "ingress", "egress", "cidr", "policy", "assume_role", "assumerole", "public", "acl",
+    "encrypt", "kms", "sse", "security_group", "securitygroup", "vpc_security_group",
+    "iam_instance_profile", "iaminstanceprofile", "role_arn", "rolearn", "principal",
+    "permission", "ssl", "tls", "certificate", "publicly_accessible", "publiclyaccessible",
+    "block_public", "blockpublic", "restrict_public", "ignore_public", "mfa", "password",
+)
+
+_TAG_KEYS = ("tags", "tags_all", "Tags", "TagSet", "TagList")
+
+
+def _is_tag_path(path: str) -> bool:
+    head = path.lstrip("/").split(".")[0].split("/")[0].split("[")[0]
+    return head in _TAG_KEYS
+
+
+def _is_security_type(rtype: str) -> bool:
+    return any(rtype.startswith(h) for h in _SECURITY_TYPE_HINTS)
+
+
+def _is_security_path(path: str) -> bool:
+    p = path.lower()
+    return any(h in p for h in _SECURITY_ATTR_HINTS)
+
+
+def classify_severity(rtype: str, action: str, paths: list[str]) -> str:
+    """high = security relevant, low = tags only, medium = anything else."""
+    if _is_security_type(rtype):
+        return "high"
+    if any(_is_security_path(p) and not _is_tag_path(p) for p in paths):
+        return "high"
+    if action == CHANGED and paths and all(_is_tag_path(p) for p in paths):
+        return "low"
+    return "medium"
+
+
+# --- data model ------------------------------------------------------------
+
+@dataclass
+class Change:
+    path: str
+    before: Any
+    after: Any
+
+
+@dataclass
+class Finding:
+    source: str            # "terraform" or "cloudformation"
+    location: str          # directory / plan file, or stack name + region
+    address: str           # Terraform address or CloudFormation logical id
+    type: str              # resource type
+    action: str            # CHANGED or DELETED
+    changes: list[Change] = field(default_factory=list)
+    physical_id: str = ""
+    severity: str = "medium"
+    explanation: str = ""
+
+
+def finalize(f: Finding) -> Finding:
+    paths = [c.path for c in f.changes]
+    f.severity = classify_severity(f.type, f.action, paths)
+    f.explanation = explain(f)
+    return f
+
+
+def _fmt_value(v: Any, limit: int = 120) -> str:
+    if v is None:
+        return "(none)"
+    if isinstance(v, str):
+        s = v
+    elif isinstance(v, dict):  # drop empty fields so an added rule reads as what it allows
+        s = json.dumps({k: x for k, x in v.items() if not _blank(x)}, sort_keys=True, default=str)
+    else:
+        s = json.dumps(v, sort_keys=True, default=str)
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def explain(f: Finding) -> str:
+    """One plain-English guess at what happened."""
+    if f.action == DELETED:
+        return "Deleted outside IaC (console, CLI or another tool); the code still expects it."
+    paths = [c.path for c in f.changes]
+    if not paths:
+        return "Changed outside IaC; the provider reported drift without attribute details."
+    if all(_is_tag_path(p) for p in paths):
+        added = any(c.before in (None, "", {}, []) for c in f.changes)
+        removed = any(c.after in (None, "", {}, []) for c in f.changes)
+        if added and not removed:
+            return "Tag added outside IaC, often by a person, a cost tool or an AWS service."
+        if removed and not added:
+            return "Tag removed outside IaC."
+        return "Tags edited outside IaC."
+    joined = " ".join(_fmt_value(c.after, 10_000) for c in f.changes)
+    lower_paths = " ".join(paths).lower()
+    if ("ingress" in lower_paths or "egress" in lower_paths or "cidr" in lower_paths
+            or f.type.startswith(("aws_security_group", "aws_vpc_security_group_", "AWS::EC2::SecurityGroup"))):
+        if "0.0.0.0/0" in joined or "::/0" in joined:
+            return "Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0)."
+        return "Security group rules edited outside IaC, likely in the console."
+    if any(h in lower_paths for h in ("password", "secret", "token")):
+        return "Password or secret changed outside IaC (a console reset or manual rotation)."
+    if "policy" in lower_paths or f.type.startswith(("aws_iam_", "AWS::IAM::")):
+        return "Policy or permissions edited outside IaC; review who gained or lost access."
+    if any(h in lower_paths for h in ("public", "acl")):
+        return "Public access setting changed outside IaC."
+    if any(h in lower_paths for h in ("encrypt", "kms", "sse")):
+        return "Encryption setting changed outside IaC."
+    names = ", ".join(sorted({p.split(".")[0].split("[")[0].lstrip("/").split("/")[0] for p in paths})[:4])
+    return f"Edited outside IaC, likely a console or CLI change to {names}."
+
+
+# --- Terraform / OpenTofu ---------------------------------------------------
+
+def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
+    """Flatten nested dicts/lists into dotted paths: a.b[0].c -> value."""
+    out: dict[str, Any] = {}
+    if isinstance(value, dict):
+        if not value and prefix:
+            out[prefix] = {}
+        for k, v in value.items():
+            out.update(_flatten(v, f"{prefix}.{k}" if prefix else str(k)))
+    elif isinstance(value, list):
+        if not value and prefix:
+            out[prefix] = []
+        # Lists of scalars compare as a whole, so reordering reads as one change.
+        if value and all(not isinstance(v, (dict, list)) for v in value):
+            out[prefix] = value
+        else:
+            for i, v in enumerate(value):
+                out.update(_flatten(v, f"{prefix}[{i}]"))
+    else:
+        out[prefix] = value
+    return out
+
+
+def _sensitive_paths(mask: Any) -> set[str]:
+    return {p for p, v in _flatten(mask).items() if v is True}
+
+
+def _masked(path: str, sensitive: set[str]) -> bool:
+    return any(path == s or path.startswith(s + ".") or path.startswith(s + "[") for s in sensitive)
+
+
+def _blank(v: Any) -> bool:
+    return v is None or v == {} or v == [] or v == ""
+
+
+def _diff(b: Any, a: Any, path: str, out: list[Change]) -> None:
+    """Walk before/after together. Added or removed list items are reported whole, empty equals missing."""
+    if b == a or (_blank(b) and _blank(a)):
+        return
+    if isinstance(b, dict) or isinstance(a, dict):
+        if (b is None or isinstance(b, dict)) and (a is None or isinstance(a, dict)):
+            b, a = b or {}, a or {}
+            for k in sorted(set(b) | set(a), key=str):
+                _diff(b.get(k), a.get(k), f"{path}.{k}" if path else str(k), out)
+            return
+    if isinstance(b, list) or isinstance(a, list):
+        bl = b if isinstance(b, list) else ([] if b is None else None)
+        al = a if isinstance(a, list) else ([] if a is None else None)
+        nested = any(isinstance(v, (dict, list)) for v in (bl or []) + (al or []))
+        # Lists of scalars compare as a whole, so a reorder or one new CIDR reads as one change.
+        if bl is not None and al is not None and nested:
+            for i in range(max(len(bl), len(al))):
+                if i < len(bl) and i < len(al):
+                    _diff(bl[i], al[i], f"{path}[{i}]", out)
+                else:  # whole item added or removed
+                    out.append(Change(f"{path}[{i}]", bl[i] if i < len(bl) else None, al[i] if i < len(al) else None))
+            return
+    out.append(Change(path, None if _blank(b) else b, None if _blank(a) else a))
+
+
+def diff_attributes(before: Any, after: Any, before_sensitive: Any = None,
+                    after_sensitive: Any = None) -> list[Change]:
+    b, a = dict(before or {}), dict(after or {})
+    # tags_all mirrors tags plus provider default tags; show it only when tags itself didn't change.
+    if b.get("tags") != a.get("tags"):
+        b.pop("tags_all", None)
+        a.pop("tags_all", None)
+    changes: list[Change] = []
+    _diff(b, a, "", changes)
+    sensitive = _sensitive_paths(before_sensitive or {}) | _sensitive_paths(after_sensitive or {})
+    for c in changes:
+        if _masked(c.path, sensitive):
+            c.before, c.after = "(sensitive)", "(sensitive, changed)"
+    return changes
+
+
+def parse_plan_json(plan: dict, location: str = "") -> list[Finding]:
+    """Parse `terraform/tofu show -json <planfile>` output (the resource_drift list)."""
+    findings = []
+    for rc in plan.get("resource_drift") or []:
+        ch = rc.get("change") or {}
+        actions = ch.get("actions") or []
+        if actions in (["no-op"], ["read"]) or not actions:
+            continue
+        action = DELETED if "delete" in actions and not ch.get("after") else CHANGED
+        changes = [] if action == DELETED else diff_attributes(
+            ch.get("before"), ch.get("after"), ch.get("before_sensitive"), ch.get("after_sensitive"))
+        if action == CHANGED and not changes:
+            continue
+        before = ch.get("before") or {}
+        findings.append(finalize(Finding(
+            source="terraform", location=location, address=rc.get("address", ""),
+            type=rc.get("type", ""), action=action, changes=changes,
+            physical_id=str(before.get("arn") or before.get("id") or ""),
+        )))
+    return findings
+
+
+def parse_json_log(lines: Iterable[str], location: str = "") -> list[Finding]:
+    """Parse the streaming `plan -json` log. It names drifted resources but has no attribute values."""
+    findings = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("type") != "resource_drift":
+            continue
+        ch = msg.get("change") or {}
+        res = ch.get("resource") or {}
+        action = DELETED if ch.get("action") == "delete" else CHANGED
+        findings.append(finalize(Finding(
+            source="terraform", location=location, address=res.get("addr", ""),
+            type=res.get("resource_type", ""), action=action,
+        )))
+    return findings
+
+
+def load_plan_file(path: str) -> list[Finding]:
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return parse_json_log(text.splitlines(), location=path)
+    if isinstance(data, dict) and ("resource_drift" in data or "format_version" in data):
+        return parse_plan_json(data, location=path)
+    if isinstance(data, dict) and data.get("type"):
+        return parse_json_log(text.splitlines(), location=path)
+    raise ValueError(f"{path} does not look like plan JSON (expected `show -json` output)")
+
+
+def find_tf_binary(preferred: str | None = None) -> str:
+    for name in ([preferred] if preferred else ["tofu", "terraform"]):
+        if name and shutil.which(name):
+            return name
+    raise RuntimeError("Neither `tofu` nor `terraform` was found on PATH (or the one you asked for).")
+
+
+def run_terraform(directory: str, binary: str | None = None, extra_args: list[str] | None = None,
+                  runner=subprocess.run) -> list[Finding]:
+    """Refresh-only plan into a temporary file, then `show -json`. Never applies, never takes the state lock."""
+    tf = find_tf_binary(binary)
+    if not os.path.isdir(os.path.join(directory, ".terraform")):
+        raise RuntimeError(f"{directory} is not initialised. Run `{tf} init` there first (it does not touch state).")
+    with tempfile.TemporaryDirectory(prefix="drift-report-") as tmp:
+        planfile = os.path.join(tmp, "refresh.tfplan")
+        cmd = [tf, f"-chdir={directory}", "plan", "-refresh-only", "-lock=false", "-input=false",
+               "-no-color", f"-out={planfile}", *(extra_args or [])]
+        proc = runner(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"`{' '.join(cmd)}` failed:\n{proc.stderr or proc.stdout}")
+        show = runner([tf, f"-chdir={directory}", "show", "-json", planfile], capture_output=True, text=True)
+        if show.returncode != 0:
+            raise RuntimeError(f"`{tf} show -json` failed:\n{show.stderr or show.stdout}")
+    return parse_plan_json(json.loads(show.stdout), location=directory)
+
+
+# --- CloudFormation -------------------------------------------------------
+
+_LISTABLE = ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE", "IMPORT_COMPLETE",
+             "IMPORT_ROLLBACK_COMPLETE"]
+
+
+def _maybe_json(v: Any) -> Any:
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except (json.JSONDecodeError, ValueError):
+            return v
+    return v
+
+
+def list_stacks(cfn) -> list[str]:
+    names = []
+    for page in cfn.get_paginator("list_stacks").paginate(StackStatusFilter=_LISTABLE):
+        for s in page.get("StackSummaries", []):
+            if not s.get("ParentId"):  # nested stacks are checked through their root
+                names.append(s["StackName"])
+    return names
+
+
+def detect_drift(cfn, stack: str, timeout: float = 600, poll: float = 5, sleep=time.sleep) -> str:
+    """Start a drift check and wait. Returns the stack drift status."""
+    det_id = cfn.detect_stack_drift(StackName=stack)["StackDriftDetectionId"]
+    waited = 0.0
+    while True:
+        st = cfn.describe_stack_drift_detection_status(StackDriftDetectionId=det_id)
+        status = st.get("DetectionStatus")
+        if status == "DETECTION_COMPLETE":
+            return st.get("StackDriftStatus", "UNKNOWN")
+        if status == "DETECTION_FAILED":
+            # Partial results are still useful (some resource types can't be checked).
+            reason = st.get("DetectionStatusReason", "")
+            print(f"warning: drift detection for {stack} failed partly: {reason}", file=sys.stderr)
+            return st.get("StackDriftStatus", "UNKNOWN")
+        if waited >= timeout:
+            raise TimeoutError(f"drift detection for {stack} did not finish in {timeout:.0f}s")
+        sleep(poll)
+        waited += poll
+
+
+def stack_findings(cfn, stack: str, region: str = "") -> list[Finding]:
+    findings = []
+    kwargs = {"StackName": stack, "StackResourceDriftStatusFilters": ["MODIFIED", "DELETED"]}
+    while True:
+        resp = cfn.describe_stack_resource_drifts(**kwargs)
+        for d in resp.get("StackResourceDrifts", []):
+            action = DELETED if d.get("StackResourceDriftStatus") == "DELETED" else CHANGED
+            changes = [Change(p.get("PropertyPath", ""), _maybe_json(p.get("ExpectedValue")),
+                              _maybe_json(p.get("ActualValue")))
+                       for p in d.get("PropertyDifferences", [])]
+            findings.append(finalize(Finding(
+                source="cloudformation", location=f"{stack} ({region})" if region else stack,
+                address=d.get("LogicalResourceId", ""), type=d.get("ResourceType", ""),
+                action=action, changes=changes, physical_id=d.get("PhysicalResourceId", ""),
+            )))
+        token = resp.get("NextToken")
+        if not token:
+            return findings
+        kwargs["NextToken"] = token
+
+
+def run_cloudformation(cfn, stacks: list[str] | None, region: str = "", timeout: float = 600,
+                       sleep=time.sleep, log=print) -> tuple[list[Finding], dict[str, str]]:
+    names = stacks or list_stacks(cfn)
+    findings: list[Finding] = []
+    statuses: dict[str, str] = {}
+    for name in names:
+        log(f"checking stack {name} …", file=sys.stderr)
+        try:
+            statuses[name] = detect_drift(cfn, name, timeout=timeout, sleep=sleep)
+        except Exception as exc:  # keep going; one bad stack shouldn't sink the report
+            statuses[name] = f"ERROR: {exc}"
+            continue
+        findings.extend(stack_findings(cfn, name, region))
+    return findings, statuses
+
+
+def cfn_client(profile: str | None, region: str | None):
+    try:
+        import boto3
+    except ImportError as exc:
+        raise RuntimeError("CloudFormation mode needs boto3: pip install boto3") from exc
+    session = boto3.Session(profile_name=profile, region_name=region)
+    if not session.region_name:
+        raise RuntimeError("No AWS region set. Pass --region or set AWS_REGION / a profile region.")
+    return session.client("cloudformation"), session.region_name
+
+
+# --- reports ---------------------------------------------------------------
+
+@dataclass
+class Report:
+    findings: list[Finding]
+    source: str
+    target: str
+    generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+    checked: dict[str, str] = field(default_factory=dict)  # CloudFormation stack -> drift status
+
+    def counts(self) -> dict[str, int]:
+        c = {s: 0 for s in SEVERITIES}
+        for f in self.findings:
+            c[f.severity] += 1
+        return c
+
+    def sorted(self) -> list[Finding]:
+        order = {s: i for i, s in enumerate(SEVERITIES)}
+        return sorted(self.findings, key=lambda f: (order[f.severity], f.location, f.address))
+
+    def pr_line(self) -> str:
+        n = len(self.findings)  # changed and deleted drift both map to a fix PR
+        if not n:
+            return ""
+        noun = "this" if n == 1 else f"{n} of these"
+        return f"{noun[0].upper() + noun[1:]} can be fixed with a pull request in Orchesterra ({PRODUCT_URL})."
+
+
+def _changes_text(f: Finding, sep: str = "; ") -> str:
+    if f.action == DELETED:
+        return "resource no longer exists"
+    if not f.changes:
+        return "(no attribute details)"
+    return sep.join(f"{c.path}: {_fmt_value(c.before)} → {_fmt_value(c.after)}" for c in f.changes)
+
+
+def _md_cell(s: str) -> str:
+    return s.replace("|", "\\|").replace("\n", " ")
+
+
+def render_markdown(r: Report) -> str:
+    c = r.counts()
+    out = [f"# Drift report: {r.target}", "",
+           f"Source: {r.source} · Generated: {r.generated_at}", ""]
+    if r.findings:
+        out.append(f"**{len(r.findings)} drifted resource(s)** · high: {c['high']} · medium: {c['medium']} · low: {c['low']}")
+    else:
+        out.append("**No drift found.** Everything matches the code.")
+    if r.checked:
+        out += ["", "Stacks checked: " + ", ".join(f"{k} ({v})" for k, v in r.checked.items())]
+    if r.findings:
+        out += ["", "| Severity | Resource | Type | Action | Changes (before → after) | What probably happened |",
+                "|---|---|---|---|---|---|"]
+        for f in r.sorted():
+            res = f.address + (f" ({f.location})" if r.source == "cloudformation" else "")
+            out.append("| " + " | ".join(_md_cell(x) for x in (
+                f.severity.upper(), res, f.type, f.action, _changes_text(f, "<br>"), f.explanation)) + " |")
+        out += ["", r.pr_line()]
+    out += ["", "---", FOOTER, ""]
+    return "\n".join(out)
+
+
+CSV_FIELDS = ["severity", "source", "location", "address", "type", "action", "physical_id",
+              "attribute", "before", "after", "what_probably_happened"]
+
+
+def render_csv(r: Report) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(CSV_FIELDS)
+    for f in r.sorted():
+        rows = f.changes or [Change("", None, None)]
+        for ch in rows:
+            w.writerow([f.severity, f.source, f.location, f.address, f.type, f.action, f.physical_id,
+                        ch.path, "" if ch.before is None else _fmt_value(ch.before, 10_000),
+                        "" if ch.after is None else _fmt_value(ch.after, 10_000), f.explanation])
+    w.writerow([])
+    w.writerow([f"# {FOOTER}"])
+    return buf.getvalue()
+
+
+def render_json(r: Report) -> str:
+    doc = {
+        "tool": "aws-drift-report", "version": __version__, "source": r.source, "target": r.target,
+        "generated_at": r.generated_at, "summary": {"total": len(r.findings), **r.counts()},
+        "stacks_checked": r.checked or None,
+        "findings": [asdict(f) for f in r.sorted()],
+        "note": r.pr_line() or None, "footer": FOOTER,
+    }
+    return json.dumps({k: v for k, v in doc.items() if v is not None}, indent=2, default=str) + "\n"
+
+
+_HTML_CSS = """
+:root{--bg:#f7f8fa;--card:#fff;--ink:#16181d;--muted:#5d6470;--line:#e3e6eb;--high:#c62828;--high-bg:#fdecea;
+--med:#b26a00;--med-bg:#fff4e0;--low:#2e6b3a;--low-bg:#e8f5ea;--accent:#3949ab;--code:#f1f3f6}
+@media (prefers-color-scheme:dark){:root{--bg:#111318;--card:#1a1d24;--ink:#e8eaee;--muted:#9aa1ad;--line:#2b2f38;
+--high:#ff8a80;--high-bg:#3a1d1d;--med:#ffc266;--med-bg:#3a2e17;--low:#8fd19e;--low-bg:#1b3222;--accent:#9fa8ff;--code:#22262e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+main{max-width:1200px;margin:0 auto;padding:32px 16px 48px}h1{font-size:24px;margin:0 0 4px}
+.meta{color:var(--muted);margin:0 0 24px}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.tile b{display:block;font-size:28px;font-variant-numeric:tabular-nums}.tile span{color:var(--muted);font-size:13px}
+.tile.high b{color:var(--high)}.tile.medium b{color:var(--med)}.tile.low b{color:var(--low)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.filters button{border:1px solid var(--line);background:var(--card);
+color:var(--ink);border-radius:999px;padding:4px 12px;font:inherit;font-size:13px;cursor:pointer}
+.filters button[aria-pressed=true]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.wrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;min-width:760px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}tr:last-child td{border-bottom:0}
+.sev{display:inline-block;font-size:12px;font-weight:600;border-radius:4px;padding:2px 8px}
+.sev.high{color:var(--high);background:var(--high-bg)}.sev.medium{color:var(--med);background:var(--med-bg)}.sev.low{color:var(--low);background:var(--low-bg)}
+code{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);border-radius:4px;padding:1px 4px;word-break:break-word}
+ul.ch{margin:0;padding:0;list-style:none}ul.ch li{margin:0 0 4px}.arrow{color:var(--muted)}.type{color:var(--muted);font-size:13px}
+.ok{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+.note{margin:16px 0 0}.note a,footer a{color:var(--accent)}footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:14px}
+"""
+
+_HTML_JS = """
+document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{
+document.querySelectorAll('.filters button').forEach(x=>x.setAttribute('aria-pressed',x===b));
+const s=b.dataset.sev;document.querySelectorAll('tbody tr').forEach(r=>{r.hidden=s!=='all'&&r.dataset.sev!==s;});}));
+"""
+
+
+def _linkify(text: str) -> str:
+    url = html.escape(PRODUCT_URL)
+    return html.escape(text).replace(url, f'<a href="{url}">orchesterra.in</a>')
+
+
+def render_html(r: Report) -> str:
+    e = html.escape
+    c = r.counts()
+    rows = []
+    for f in r.sorted():
+        if f.action == DELETED:
+            ch = "<em>resource no longer exists</em>"
+        elif not f.changes:
+            ch = "<em>no attribute details</em>"
+        else:
+            ch = "<ul class=ch>" + "".join(
+                f"<li><code>{e(x.path)}</code><br><code>{e(_fmt_value(x.before, 300))}</code> "
+                f"<span class=arrow>→</span> <code>{e(_fmt_value(x.after, 300))}</code></li>" for x in f.changes) + "</ul>"
+        where = f"<div class=type>{e(f.location)}</div>" if r.source == "cloudformation" else ""
+        rows.append(
+            f"<tr data-sev={f.severity}><td><span class='sev {f.severity}'>{f.severity.upper()}</span></td>"
+            f"<td><code>{e(f.address)}</code>{where}<div class=type>{e(f.type)}</div></td>"
+            f"<td>{e(f.action)}</td><td>{ch}</td><td>{e(f.explanation)}</td></tr>")
+    checked = ""
+    if r.checked:
+        checked = "<p class=meta>Stacks checked: " + ", ".join(f"{e(k)} ({e(v)})" for k, v in r.checked.items()) + "</p>"
+    if r.findings:
+        body = (
+            "<div class=tiles>"
+            f"<div class=tile><b>{len(r.findings)}</b><span>drifted resources</span></div>"
+            + "".join(f"<div class='tile {s}'><b>{c[s]}</b><span>{s}</span></div>" for s in SEVERITIES)
+            + "</div>" + checked +
+            "<div class=filters role=group aria-label='Filter by severity'>"
+            "<button data-sev=all aria-pressed=true>All</button>"
+            + "".join(f"<button data-sev={s} aria-pressed=false>{s.title()}</button>" for s in SEVERITIES) +
+            "</div><div class=wrap><table><thead><tr><th>Severity</th><th>Resource</th><th>Action</th>"
+            "<th>Changes (before → after)</th><th>What probably happened</th></tr></thead><tbody>"
+            + "".join(rows) + "</tbody></table></div>"
+            f"<p class=note>{_linkify(r.pr_line())}</p>")
+    else:
+        body = checked + "<div class=ok><strong>No drift found.</strong> Everything matches the code.</div>"
+    footer_html = _linkify(FOOTER)
+    return (
+        "<!doctype html><html lang=en><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        f"<title>Drift report</title><style>{_HTML_CSS}</style></head><body><main>"
+        f"<h1>Drift report: {e(r.target)}</h1>"
+        f"<p class=meta>{e(r.source.title())} · generated {e(r.generated_at)} · read-only check by aws-drift-report {__version__}</p>"
+        f"{body}<footer>{footer_html}</footer></main><script>{_HTML_JS}</script></body></html>\n")
+
+
+RENDERERS = {"md": render_markdown, "csv": render_csv, "json": render_json, "html": render_html}
+
+
+# --- CLI ------------------------------------------------------------------
+
+SHARE_NOTE = ("--share is coming soon: it will upload this report to Orchesterra as a private page your "
+              "teammates can open. Nothing was uploaded; the report was written locally only.")
+
+
+def share_report(report: Report, rendered_html: str) -> None:
+    """Placeholder for the future --share flag.
+
+    Planned behaviour: POST the HTML report to an Orchesterra endpoint and print a link teammates can open.
+    The endpoint does not exist yet, so this makes no network call. It must stay opt-in and never run by default.
+    """
+    print(SHARE_NOTE, file=sys.stderr)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="aws-drift-report",
+        description="Read-only drift report for Terraform/OpenTofu and CloudFormation on AWS.",
+        epilog=FOOTER)
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--format", "-f", choices=sorted(RENDERERS), default="md", help="report format (default md)")
+    common.add_argument("--output", "-o", help="write the report to this file (default stdout)")
+    common.add_argument("--fail-on-drift", action="store_true", help="exit 2 when drift is found (for CI)")
+    common.add_argument("--share", action="store_true", help="coming soon: share the report with teammates on Orchesterra")
+    sub = p.add_subparsers(dest="mode", required=True)
+
+    tf = sub.add_parser("terraform", aliases=["tf", "tofu"], parents=[common],
+                        help="refresh-only plan of a Terraform/OpenTofu directory, or a plan JSON file")
+    src = tf.add_mutually_exclusive_group()
+    src.add_argument("--dir", "-d", default=None, help="Terraform/OpenTofu directory (default: current directory)")
+    src.add_argument("--plan-json", help="read `show -json` output (or a `plan -json` log) instead of running a plan")
+    tf.add_argument("--binary", choices=["tofu", "terraform"], help="which CLI to run (default: tofu, then terraform)")
+    tf.add_argument("--var-file", action="append", default=[], help="passed through to plan; may repeat")
+
+    cf = sub.add_parser("cloudformation", aliases=["cfn"], parents=[common],
+                        help="run CloudFormation drift detection on stacks")
+    cf.add_argument("--stack", "-s", action="append", default=[], help="stack name; may repeat (default: all stacks)")
+    cf.add_argument("--region", "-r", help="AWS region (default: profile/env region)")
+    cf.add_argument("--profile", "-p", help="AWS profile (default: env/default credentials)")
+    cf.add_argument("--timeout", type=float, default=600, help="seconds to wait per stack (default 600)")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.mode in ("terraform", "tf", "tofu"):
+            if args.plan_json:
+                findings, target = load_plan_file(args.plan_json), args.plan_json
+            else:
+                directory = os.path.abspath(args.dir or ".")
+                extra = [f"-var-file={v}" for v in args.var_file]
+                findings, target = run_terraform(directory, args.binary, extra), directory
+            report = Report(findings, "terraform", target)
+        else:
+            cfn, region = cfn_client(args.profile, args.region)
+            findings, statuses = run_cloudformation(cfn, args.stack, region, args.timeout)
+            if not statuses:
+                print(f"No stacks found in {region}.", file=sys.stderr)
+            target = ", ".join(args.stack) if args.stack else f"all stacks in {region}"
+            report = Report(findings, "cloudformation", target, checked=statuses)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    text = RENDERERS[args.format](report)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        c = report.counts()
+        print(f"Wrote {args.output}: {len(report.findings)} drifted (high {c['high']}, medium {c['medium']}, "
+              f"low {c['low']}).", file=sys.stderr)
+    else:
+        sys.stdout.write(text)
+    if args.share:
+        share_report(report, render_html(report))
+    return 2 if args.fail_on_drift and report.findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

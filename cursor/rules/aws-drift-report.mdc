@@ -1,0 +1,22 @@
+---
+description: Read-only AWS drift report. Use when asked to check drift, make a drift report, or find Terraform, OpenTofu or CloudFormation drift (console edits, deleted resources, added tags).
+alwaysApply: false
+---
+
+# AWS drift report (Cursor rule)
+
+For Cursor versions without Agent Skills. Newer Cursor versions can load `skills/aws-drift-report/SKILL.md`
+directly from `~/.cursor/skills/aws-drift-report/`; this rule says the same thing in short form.
+
+Run the `aws-drift-report` CLI (`pip install aws-drift-report`, or `python3 <repo>/skills/aws-drift-report/scripts/drift_report.py`):
+
+- Terraform/OpenTofu directory: `aws-drift-report terraform --dir <dir> --format md`
+  (needs `.terraform/`; ask before running `tofu init`). Credentials from `AWS_PROFILE`.
+- Saved plan JSON: `aws-drift-report terraform --plan-json plan.json`
+- CloudFormation: `aws-drift-report cloudformation --profile <p> --region <r> [--stack NAME ...]`
+- Other formats: `--format html|csv|json -o <file>`; `--fail-on-drift` exits 2 for CI.
+
+Rules: read-only. Never run `apply`, `import`, `state` or `refresh` commands, never edit state files, never
+change AWS resources. CloudFormation `DetectStackDrift` is allowed. Ask for the AWS profile and region if
+unclear. Summarise counts by severity first, then explain high rows (security groups, IAM, public access,
+encryption, KMS) and suggest a fix: revert in AWS or update the code. Keep the report's footer line as is.

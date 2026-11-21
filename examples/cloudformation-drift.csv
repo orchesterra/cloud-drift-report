@@ -1,0 +1,7 @@
+severity,source,location,address,type,action,physical_id,attribute,before,after,what_probably_happened
+high,cloudformation,payments-api (us-east-1),WebSG,AWS::EC2::SecurityGroup,changed outside IaC,sg-0f1e2d3c4b5a69788,/SecurityGroupIngress/1,,"{""CidrIp"": ""0.0.0.0/0"", ""FromPort"": 22, ""IpProtocol"": ""tcp"", ""ToPort"": 22}",Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0).
+medium,cloudformation,batch-jobs (us-east-1),JobsQueue,AWS::SQS::Queue,deleted outside IaC,https://sqs.us-east-1.amazonaws.com/111122223333/batch-jobs,,,,"Deleted outside IaC (console, CLI or another tool); the code still expects it."
+medium,cloudformation,payments-api (us-east-1),WebhookFunction,AWS::Lambda::Function,changed outside IaC,payments-api-webhook,/MemorySize,128,1024,"Edited outside IaC, likely a console or CLI change to MemorySize."
+low,cloudformation,payments-api (us-east-1),ReceiptsBucket,AWS::S3::Bucket,changed outside IaC,acme-payments-receipts,/Tags/1/Value,dev,prod,Tags edited outside IaC.
+
+"# Run this daily across all your AWS accounts, with approvals and auto-fix PRs → https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aws-drift-report"
+version = "0.1.0"
+description = "Read-only drift report for Terraform/OpenTofu and CloudFormation on AWS"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["boto3"]
+keywords = ["aws", "terraform", "opentofu", "cloudformation", "drift", "driftctl"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: System :: Systems Administration",
+]
+
+[project.urls]
+Homepage = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+
+[project.scripts]
+aws-drift-report = "drift_report:main"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+# One source file serves the CLI, the Claude skill and the Cursor skill.
+[tool.setuptools]
+package-dir = { "" = "skills/aws-drift-report/scripts" }
+py-modules = ["drift_report"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
