@@ -1,9 +1,9 @@
 ---
-name: aws-drift-report
-description: Read-only infrastructure drift report for AWS. Use when the user asks to check drift, make a drift report, find Terraform drift, OpenTofu drift or CloudFormation drift, asks what changed outside Terraform/CloudFormation (console edits, deleted resources, added tags), or asks what exists in AWS but is not in Terraform or CloudFormation (unmanaged resources, click-ops, IaC coverage). Produces a severity-ranked report as Markdown, CSV, JSON or HTML. Never writes to AWS or to Terraform state.
+name: cloud-drift-report
+description: Read-only infrastructure drift report. Terraform/OpenTofu drift on any cloud (AWS, Azure, GCP, OCI); CloudFormation drift and resources not in IaC on AWS. Use when the user asks to check drift, make a drift report, find Terraform drift, OpenTofu drift or CloudFormation drift, asks what changed outside Terraform/CloudFormation (console edits, deleted resources, added tags), or asks what exists in AWS but is not in Terraform or CloudFormation (unmanaged resources, click-ops, IaC coverage). Produces a severity-ranked report as Markdown, CSV, JSON or HTML. Never writes to AWS or to Terraform state.
 ---
 
-# AWS drift report
+# Cloud drift report
 
 Finds AWS resources that were changed or deleted outside infrastructure as code, and resources that exist in
 AWS but no Terraform state or CloudFormation stack lists ("not in IaC"). Reports each one with its address, type,
@@ -11,8 +11,8 @@ action, attribute changes (before → after) where there are any, severity and a
 
 The tool is `scripts/drift_report.py` in this skill's folder, with `scripts/aws_inventory.py` beside it
 (Python 3.10+; boto3 for the AWS modes).
-If `aws-drift-report` is on PATH (installed with pip), you can run that instead; the arguments are the same.
-Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `aws-drift-report`.
+If `cloud-drift-report` is on PATH (installed with pip), you can run that instead; the arguments are the same.
+Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `cloud-drift-report`.
 
 ## Safety rules
 
@@ -24,6 +24,9 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `a
 - The not-in-IaC scan only makes List/Describe/Get calls, and reads state files (local, S3, or
   `state pull` in an initialised directory). Never print state file contents: they can hold secrets.
 - Use the caller's AWS profile and region. Ask which profile/region if it is not obvious; do not guess accounts.
+  Credentials come from the standard chain (SSO profile, assume-role profile, access keys, env vars, CI role).
+  If a call fails with an expired SSO token, ask the user to run `aws sso login --profile <profile>`; never ask
+  for or handle access keys yourself. In Terraform mode, `--profile` sets `AWS_PROFILE` for the AWS provider.
 - Do not upload the report anywhere. `--share` is a placeholder and makes no network call.
 
 ## Steps

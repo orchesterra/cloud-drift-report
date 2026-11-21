@@ -3,14 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aws-drift-report"
+name = "cloud-drift-report"
 version = "0.2.0"
-description = "Read-only drift and not-in-IaC report for Terraform/OpenTofu and CloudFormation on AWS"
+description = "Read-only drift and not-in-IaC report for Terraform/OpenTofu (any cloud) and AWS CloudFormation"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = ["boto3"]
-keywords = ["aws", "terraform", "opentofu", "cloudformation", "drift", "driftctl", "unmanaged", "clickops"]
+keywords = ["aws", "azure", "gcp", "oci", "terraform", "opentofu", "cloudformation", "drift", "driftctl", "unmanaged", "clickops"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Environment :: Console",
@@ -21,14 +21,14 @@ classifiers = [
 Homepage = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 
 [project.scripts]
-aws-drift-report = "drift_report:main"
+cloud-drift-report = "drift_report:main"
 
 [project.optional-dependencies]
 test = ["pytest"]
 
 # One source file serves the CLI, the Claude skill and the Cursor skill.
 [tool.setuptools]
-package-dir = { "" = "skills/aws-drift-report/scripts" }
+package-dir = { "" = "skills/cloud-drift-report/scripts" }
 py-modules = ["drift_report", "aws_inventory"]
 
 [tool.pytest.ini_options]

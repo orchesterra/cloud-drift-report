@@ -1,5 +1,5 @@
 {
-  "tool": "aws-drift-report",
+  "tool": "cloud-drift-report",
   "version": "0.2.0",
   "source": "cloudformation",
   "target": "all stacks in us-east-1",

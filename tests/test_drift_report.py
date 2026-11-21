@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "skills" / "aws-drift-report" / "scripts"))
+sys.path.insert(0, str(ROOT / "skills" / "cloud-drift-report" / "scripts"))
 
 import drift_report as dr  # noqa: E402
 
@@ -112,6 +112,22 @@ def test_run_terraform_is_refresh_only_and_lock_free(tmp_path, monkeypatch):
     assert plan_cmd[0] == "tofu" and "plan" in plan_cmd and "-refresh-only" in plan_cmd and "-lock=false" in plan_cmd
     assert not any(a in ("apply", "import", "state", "refresh") for a in plan_cmd + show_cmd)
     assert show_cmd[2:4] == ["show", "-json"]
+
+
+def test_run_terraform_passes_profile_to_the_provider(tmp_path, monkeypatch):
+    (tmp_path / ".terraform").mkdir()
+    envs = []
+    plan = json.loads(FIXTURE.read_text())
+
+    def runner(cmd, **kw):
+        envs.append(kw.get("env"))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(plan) if "show" in cmd else "", stderr="")
+
+    monkeypatch.setattr(dr.shutil, "which", lambda name: "/usr/bin/" + name)
+    dr.run_terraform(str(tmp_path), "terraform", runner=runner, profile="prod-sso")
+    assert [e["AWS_PROFILE"] for e in envs] == ["prod-sso", "prod-sso"]
+    dr.run_terraform(str(tmp_path), "terraform", runner=runner)
+    assert envs[2:] == [None, None]  # no flag: the environment is left alone
 
 
 def test_run_terraform_needs_init(tmp_path, monkeypatch):
@@ -306,7 +322,7 @@ def test_cli_error_exit_code(capsys):
 
 
 def test_script_runs_standalone():
-    script = ROOT / "skills" / "aws-drift-report" / "scripts" / "drift_report.py"
+    script = ROOT / "skills" / "cloud-drift-report" / "scripts" / "drift_report.py"
     proc = subprocess.run([sys.executable, str(script), "terraform", "--plan-json", str(FIXTURE), "-f", "json"],
                           capture_output=True, text=True, env={**os.environ, "PYTHONPATH": ""})
     assert proc.returncode == 0, proc.stderr

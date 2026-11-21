@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""aws-drift-report: read-only drift report for Terraform/OpenTofu and CloudFormation.
+"""cloud-drift-report: read-only drift report for Terraform/OpenTofu (any cloud) and AWS CloudFormation.
 
 Finds resources that were changed or deleted outside infrastructure as code, and
 resources that exist in AWS but no Terraform state or CloudFormation stack lists,
@@ -324,19 +324,21 @@ def find_tf_binary(preferred: str | None = None) -> str:
 
 
 def run_terraform(directory: str, binary: str | None = None, extra_args: list[str] | None = None,
-                  runner=subprocess.run) -> list[Finding]:
+                  runner=subprocess.run, profile: str | None = None) -> list[Finding]:
     """Refresh-only plan into a temporary file, then `show -json`. Never applies, never takes the state lock."""
     tf = find_tf_binary(binary)
+    # --profile is passed to the AWS provider as AWS_PROFILE; other clouds use their own env or config.
+    env = {**os.environ, "AWS_PROFILE": profile} if profile else None
     if not os.path.isdir(os.path.join(directory, ".terraform")):
         raise RuntimeError(f"{directory} is not initialised. Run `{tf} init` there first (it does not touch state).")
     with tempfile.TemporaryDirectory(prefix="drift-report-") as tmp:
         planfile = os.path.join(tmp, "refresh.tfplan")
         cmd = [tf, f"-chdir={directory}", "plan", "-refresh-only", "-lock=false", "-input=false",
                "-no-color", f"-out={planfile}", *(extra_args or [])]
-        proc = runner(cmd, capture_output=True, text=True)
+        proc = runner(cmd, capture_output=True, text=True, env=env)
         if proc.returncode != 0:
             raise RuntimeError(f"`{' '.join(cmd)}` failed:\n{proc.stderr or proc.stdout}")
-        show = runner([tf, f"-chdir={directory}", "show", "-json", planfile], capture_output=True, text=True)
+        show = runner([tf, f"-chdir={directory}", "show", "-json", planfile], capture_output=True, text=True, env=env)
         if show.returncode != 0:
             raise RuntimeError(f"`{tf} show -json` failed:\n{show.stderr or show.stdout}")
     return parse_plan_json(json.loads(show.stdout), location=directory)
@@ -502,7 +504,7 @@ def render_markdown(r: Report) -> str:
     if r.findings:
         out.append(f"**{r.noun()}** · high: {c['high']} · medium: {c['medium']} · low: {c['low']}")
     elif r.source == "aws":
-        out.append("**Everything listed is in IaC.**")
+        out.append("**Everything listed is in IaC.**" if r.coverage.get("listed", 1) else "**No resources found.**")
     else:
         out.append("**No drift found.** Everything matches the code.")
     if r.coverage:
@@ -548,7 +550,7 @@ def render_csv(r: Report) -> str:
 
 def render_json(r: Report) -> str:
     doc = {
-        "tool": "aws-drift-report", "version": __version__, "source": r.source, "target": r.target,
+        "tool": "cloud-drift-report", "version": __version__, "source": r.source, "target": r.target,
         "generated_at": r.generated_at, "summary": {"total": len(r.findings), **r.counts()},
         "stacks_checked": r.checked or None,
         "coverage": r.coverage or None,
@@ -634,7 +636,8 @@ def render_html(r: Report) -> str:
             + "".join(rows) + "</tbody></table></div>"
             f"<p class=note>{_linkify(r.pr_line())}</p>")
     else:
-        ok = ("<strong>Everything listed is in IaC.</strong>" if r.source == "aws"
+        ok = (("<strong>Everything listed is in IaC.</strong>" if r.coverage.get("listed", 1)
+               else "<strong>No resources found.</strong>") if r.source == "aws"
               else "<strong>No drift found.</strong> Everything matches the code.")
         body = checked + f"<div class=ok>{ok}</div>"
     footer_html = _linkify(FOOTER)
@@ -643,7 +646,7 @@ def render_html(r: Report) -> str:
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         f"<title>{'Not-in-IaC report' if r.source == 'aws' else 'Drift report'}</title><style>{_HTML_CSS}</style></head><body><main>"
         f"<h1>{'Not in IaC' if r.source == 'aws' else 'Drift report'}: {e(r.target)}</h1>"
-        f"<p class=meta>{e('AWS account scan' if r.source == 'aws' else r.source.title())} · generated {e(r.generated_at)} · read-only check by aws-drift-report {__version__}</p>"
+        f"<p class=meta>{e('AWS account scan' if r.source == 'aws' else r.source.title())} · generated {e(r.generated_at)} · read-only check by cloud-drift-report {__version__}</p>"
         f"{body}<footer>{footer_html}</footer></main><script>{_HTML_JS}</script></body></html>\n")
 
 
@@ -667,9 +670,9 @@ def share_report(report: Report, rendered_html: str) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="aws-drift-report",
-        description="Read-only drift report for Terraform/OpenTofu and CloudFormation on AWS, "
-                    "plus resources that are in no IaC at all.",
+        prog="cloud-drift-report",
+        description="Read-only drift report for Terraform/OpenTofu (any cloud) and AWS CloudFormation, "
+                    "plus AWS resources that are in no IaC at all.",
         epilog=FOOTER)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     common = argparse.ArgumentParser(add_help=False)
@@ -686,6 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--plan-json", help="read `show -json` output (or a `plan -json` log) instead of running a plan")
     tf.add_argument("--binary", choices=["tofu", "terraform"], help="which CLI to run (default: tofu, then terraform)")
     tf.add_argument("--var-file", action="append", default=[], help="passed through to plan; may repeat")
+    tf.add_argument("--profile", "-p", help="AWS profile for the AWS provider (sets AWS_PROFILE; default: env/default)")
 
     cf = sub.add_parser("cloudformation", aliases=["cfn"], parents=[common],
                         help="run CloudFormation drift detection on stacks")
@@ -779,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 directory = os.path.abspath(args.dir or ".")
                 extra = [f"-var-file={v}" for v in args.var_file]
-                findings, target = run_terraform(directory, args.binary, extra), directory
+                findings, target = run_terraform(directory, args.binary, extra, profile=args.profile), directory
             report = Report(findings, "terraform", target)
         elif args.mode in ("unmanaged", "scan"):
             report = run_unmanaged(args)

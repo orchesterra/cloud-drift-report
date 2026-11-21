@@ -1,12 +1,18 @@
-# aws-drift-report
+# cloud-drift-report
 
-A read-only drift report for AWS. It finds resources that someone changed or deleted outside your
-Terraform, OpenTofu or CloudFormation code, and resources that exist in your account but no state file or
-stack knows about. It ranks them by severity and explains each one in plain English.
+A read-only drift report for your cloud infrastructure. It finds resources that someone changed or deleted
+outside your Terraform, OpenTofu or CloudFormation code, and resources that exist in your account but no state
+file or stack knows about. It ranks them by severity and explains each one in plain English.
+
+| | AWS | Azure, GCP, OCI |
+|---|---|---|
+| Terraform / OpenTofu drift | ✅ | ✅ (any provider `plan -refresh-only` can refresh) |
+| CloudFormation drift | ✅ | — |
+| Resources not in any IaC | ✅ | planned |
 
 It ships three ways, from the same code:
 
-- a **command-line tool** (`aws-drift-report`)
+- a **command-line tool** (`cloud-drift-report`)
 - a **Claude skill** (Claude Code, Claude desktop and claude.ai)
 - a **Cursor skill**, plus a Cursor rule for older versions
 
@@ -52,13 +58,13 @@ or `terraform` on PATH.
 ### Command-line tool
 
 ```bash
-pip install git+https://github.com/akshaykilam1/orchesterra-skills
+pip install git+https://github.com/orchesterra/cloud-drift-report
 ```
 
 Or run the script directly with no install:
 
 ```bash
-python3 skills/aws-drift-report/scripts/drift_report.py --help
+python3 skills/cloud-drift-report/scripts/drift_report.py --help
 ```
 
 ### Claude skill
@@ -66,7 +72,7 @@ python3 skills/aws-drift-report/scripts/drift_report.py --help
 Copy the skill folder into your Claude skills directory:
 
 ```bash
-cp -r skills/aws-drift-report ~/.claude/skills/
+cp -r skills/cloud-drift-report ~/.claude/skills/
 ```
 
 Then ask Claude: *"check drift in ./infra"*, *"make a drift report for my CloudFormation stacks in us-east-1"*,
@@ -77,38 +83,94 @@ Then ask Claude: *"check drift in ./infra"*, *"make a drift report for my CloudF
 Cursor versions with Agent Skills read the same folder:
 
 ```bash
-mkdir -p ~/.cursor/skills && cp -r skills/aws-drift-report ~/.cursor/skills/
+mkdir -p ~/.cursor/skills && cp -r skills/cloud-drift-report ~/.cursor/skills/
 ```
 
 For older Cursor versions, copy the rule into your project instead:
 
 ```bash
-mkdir -p .cursor/rules && cp cursor/rules/aws-drift-report.mdc .cursor/rules/
+mkdir -p .cursor/rules && cp cursor/rules/cloud-drift-report.mdc .cursor/rules/
 ```
+
+## Credentials
+
+The tool never asks for, stores or sends credentials. It uses whatever is already set up on the machine,
+through the standard AWS credential chain (the same one the AWS CLI uses):
+
+| How you sign in | How to run it |
+|---|---|
+| SSO (IAM Identity Center), recommended | `aws sso login --profile prod`, then `--profile prod` |
+| Assume-role profile (`role_arn` + `source_profile` in `~/.aws/config`) | `--profile <name>` |
+| Access keys in `~/.aws/credentials` | `--profile <name>`, or nothing for `default` |
+| Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, ...) | no flag needed |
+| CI with OIDC (GitHub Actions, GitLab), or an EC2/ECS/Lambda role | no flag needed |
+
+Terraform/OpenTofu mode runs `tofu` or `terraform`, so the provider reads its own credentials: `--profile`
+there sets `AWS_PROFILE` for the AWS provider; Azure, GCP and OCI providers use their usual environment
+variables or CLI login (`az login`, `gcloud auth application-default login`, `~/.oci/config`).
+
+Prefer SSO or a role over long-lived access keys. The AWS managed `ReadOnlyAccess` policy covers everything
+the tool reads; see [Safety](#safety) for the exact calls.
+
+### In GitHub Actions
+
+Run it on a schedule with a read-only role (no stored keys, using GitHub's OIDC). The job fails when something
+drifted or is not in IaC, and the HTML report is kept as an artifact:
+
+```yaml
+name: drift-report
+on:
+  schedule: [{ cron: "0 6 * * 1-5" }]   # weekdays 06:00 UTC
+  workflow_dispatch:
+permissions:
+  id-token: write   # for OIDC
+  contents: read
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/drift-report-readonly
+          aws-region: us-east-1
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install git+https://github.com/orchesterra/cloud-drift-report
+      - run: >
+          cloud-drift-report unmanaged --state s3://acme-tf-state/prod/
+          --format html -o not-in-iac.html --fail-on-drift
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: drift-report, path: not-in-iac.html }
+```
+
+For Terraform drift in CI, add `hashicorp/setup-terraform` or `opentofu/setup-opentofu`, run `init` in your
+directory, then `cloud-drift-report terraform --dir ./infra --fail-on-drift`.
 
 ## Examples
 
 ```bash
 # Terraform/OpenTofu directory (must already be initialised), Markdown to the terminal
-AWS_PROFILE=prod aws-drift-report terraform --dir ./infra
+AWS_PROFILE=prod cloud-drift-report terraform --dir ./infra
 
 # An existing plan file
 tofu plan -refresh-only -out=plan.out && tofu show -json plan.out > plan.json
-aws-drift-report terraform --plan-json plan.json --format html -o drift.html
+cloud-drift-report terraform --plan-json plan.json --format html -o drift.html
 
 # CloudFormation: two stacks, or every stack in a region
-aws-drift-report cloudformation --profile prod --region us-east-1 --stack payments-api --stack network
-aws-drift-report cloudformation --profile prod --region us-east-1 --format csv -o drift.csv
+cloud-drift-report cloudformation --profile prod --region us-east-1 --stack payments-api --stack network
+cloud-drift-report cloudformation --profile prod --region us-east-1 --format csv -o drift.csv
 
 # Not in IaC: compare us-east-1 with every state file under an S3 prefix and all CloudFormation stacks
-aws-drift-report unmanaged --profile prod --region us-east-1 --state s3://acme-tf-state/prod/
+cloud-drift-report unmanaged --profile prod --region us-east-1 --state s3://acme-tf-state/prod/
 
 # Not in IaC across every enabled region, several state sources, HTML report
-aws-drift-report unmanaged --profile prod --all-regions \
+cloud-drift-report unmanaged --profile prod --all-regions \
   --state s3://acme-tf-state/ --state ./legacy/terraform.tfstate --format html -o not-in-iac.html
 
 # CI: exit code 2 when drift (or a resource not in IaC) is found
-aws-drift-report terraform --dir ./infra --fail-on-drift
+cloud-drift-report terraform --dir ./infra --fail-on-drift
 ```
 
 Exit codes: `0` ok, `1` error, `2` drift or a resource not in IaC found with `--fail-on-drift`.
@@ -151,7 +213,7 @@ Regenerate them with `python3 examples/generate.py`.
 - Not in IaC: only List, Describe and Get calls (Cloud Control `ListResources`, plus a few service list calls
   such as `ec2:DescribeVpcs` and `iam:ListRoles`), `cloudformation:ListStackResources`, and reads of the state
   files you name. State files are read in memory and never printed or saved.
-- Uses your own AWS profile and region. The AWS managed `ReadOnlyAccess` policy is enough, plus
+- Uses your own credentials (see [Credentials](#credentials)). The AWS managed `ReadOnlyAccess` policy is enough, plus
   `cloudformation:DetectStackDrift` for CloudFormation drift and whatever read permissions your Terraform
   provider needs to refresh.
 
@@ -178,7 +240,7 @@ This tool tells you what has drifted and what is not in code, once. [OrchesTerra
 platform for AWS that keeps doing it, fixes what it finds, and runs the rest of your infrastructure workflow
 in one place.
 
-| | aws-drift-report (free) | OrchesTerra (paid, cloud) |
+| | cloud-drift-report (free) | OrchesTerra (paid, cloud) |
 |---|---|---|
 | Drift in Terraform/OpenTofu and CloudFormation | ✅ one run | ✅ scheduled scans, history and trends |
 | Resources not in any IaC | ✅ one run | ✅ continuous, every AWS service |
