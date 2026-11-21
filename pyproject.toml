@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -19,6 +19,8 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+Repository = "https://github.com/orchesterra/cloud-drift-report"
+Issues = "https://github.com/orchesterra/cloud-drift-report/issues"
 
 [project.scripts]
 cloud-drift-report = "drift_report:main"

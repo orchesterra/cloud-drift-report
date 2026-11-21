@@ -58,8 +58,10 @@ or `terraform` on PATH.
 ### Command-line tool
 
 ```bash
-pip install git+https://github.com/orchesterra/cloud-drift-report
+pip install cloud-drift-report
 ```
+
+Or the latest code from GitHub: `pip install git+https://github.com/orchesterra/cloud-drift-report`.
 
 Or run the script directly with no install:
 
@@ -136,7 +138,7 @@ jobs:
           aws-region: us-east-1
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install git+https://github.com/orchesterra/cloud-drift-report
+      - run: pip install cloud-drift-report
       - run: >
           cloud-drift-report unmanaged --state s3://acme-tf-state/prod/
           --format html -o not-in-iac.html --fail-on-drift
@@ -195,13 +197,13 @@ only CloudFormation stacks count as IaC.
 | LOW      | aws_s3_bucket.logs         | changed outside IaC | tags.CostCenter: (none) → 1234                              | Tag added outside IaC. |
 ```
 
-Full samples in every format are in [`examples/`](examples/): Terraform
-([md](examples/terraform-drift.md), [csv](examples/terraform-drift.csv), [json](examples/terraform-drift.json),
-[html](examples/terraform-drift.html)) and CloudFormation
-([md](examples/cloudformation-drift.md), [csv](examples/cloudformation-drift.csv),
-[json](examples/cloudformation-drift.json), [html](examples/cloudformation-drift.html)) and not in IaC
-([md](examples/not-in-iac.md), [csv](examples/not-in-iac.csv), [json](examples/not-in-iac.json),
-[html](examples/not-in-iac.html)).
+Full samples in every format are in [`examples/`](https://github.com/orchesterra/cloud-drift-report/tree/main/examples): Terraform
+([md](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/terraform-drift.md), [csv](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/terraform-drift.csv), [json](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/terraform-drift.json),
+[html](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/terraform-drift.html)) and CloudFormation
+([md](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/cloudformation-drift.md), [csv](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/cloudformation-drift.csv),
+[json](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/cloudformation-drift.json), [html](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/cloudformation-drift.html)) and not in IaC
+([md](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/not-in-iac.md), [csv](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/not-in-iac.csv), [json](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/not-in-iac.json),
+[html](https://github.com/orchesterra/cloud-drift-report/blob/main/examples/not-in-iac.html)).
 Regenerate them with `python3 examples/generate.py`.
 
 ## Safety
@@ -280,4 +282,4 @@ AWS access.
 
 ## Licence
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/orchesterra/cloud-drift-report/blob/main/LICENSE).
