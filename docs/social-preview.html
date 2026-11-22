@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset=utf-8><style>
+*{box-sizing:border-box;margin:0}body{width:1280px;height:640px;background:#f7f8fa;font:20px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#16181d;overflow:hidden}
+.wrap{display:grid;grid-template-columns:600px 1fr;gap:44px;padding:52px 64px 0;height:560px}
+.logo{height:44px;mix-blend-mode:multiply;margin:-6px 0 34px -6px}
+h1{font-size:62px;letter-spacing:-.02em;line-height:1.05;margin-bottom:20px}
+.tag{font-size:27px;color:#3d4350;margin-bottom:30px}
+.pills span{display:inline-block;font-size:18px;font-weight:600;border:1.5px solid #d6d9e0;border-radius:999px;padding:5px 14px;margin:0 8px 10px 0;background:#fff}
+.card{align-self:start;background:#fff;border:1px solid #e3e6eb;border-radius:16px;box-shadow:0 12px 40px rgba(40,30,90,.10);padding:18px 24px 10px;margin-top:6px}
+.card h3{font-size:16px;text-transform:uppercase;letter-spacing:.05em;color:#5d6470;margin-bottom:14px}
+.row{display:grid;grid-template-columns:86px 1fr;gap:12px;align-items:start;padding:8px 0;border-top:1px solid #eef0f3}
+.sev{font-size:14px;font-weight:700;border-radius:5px;padding:3px 8px;text-align:center}
+.h{color:#c62828;background:#fdecea}.l{color:#2e6b3a;background:#e8f5ea}.m{color:#b26a00;background:#fff4e0}
+.r b{font:600 17px ui-monospace,Menlo,monospace;display:block}.r i{font-style:normal;font-size:16px;color:#5d6470}
+.foot{height:80px;background:linear-gradient(90deg,#7c3aed,#9f67f5);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 64px;font-size:22px}
+.foot code{font:600 22px ui-monospace,Menlo,monospace;background:rgba(255,255,255,.16);padding:6px 14px;border-radius:8px}
+</style></head><body><div class=wrap><div>
+<img class=logo src="orchesterra-logo.png">
+<h1>cloud-drift-report</h1>
+<p class=tag>Find what changed outside your IaC, and what your IaC never knew about.</p>
+<div class=pills><span>Terraform</span><span>OpenTofu</span><span>CloudFormation</span><span>AWS</span><span>CLI · Claude · Cursor · GitHub Action</span></div>
+</div><div class=card><h3>Drift report</h3>
+<div class=row><span class="sev h">HIGH</span><div class=r><b>aws_security_group.web</b><i>port 22 opened to 0.0.0.0/0 in the console</i></div></div>
+<div class=row><span class="sev h">HIGH</span><div class=r><b>aws_iam_role_policy.app</b><i>s3:GetObject → s3:* outside Terraform</i></div></div>
+<div class=row><span class="sev h">HIGH</span><div class=r><b>ci-deploy-user</b><i>IAM user in no state file or stack</i></div></div>
+<div class=row><span class="sev m">MEDIUM</span><div class=r><b>aws_instance.worker</b><i>t3.small → t3.large</i></div></div>
+<div class=row><span class="sev m">MEDIUM</span><div class=r><b>marketing-exports</b><i>S3 bucket created by hand, not in IaC</i></div></div>
+<div class=row><span class="sev l">LOW</span><div class=r><b>aws_s3_bucket.logs</b><i>tag CostCenter added</i></div></div>
+</div></div>
+<div class=foot><span>Free and open source · read-only · by OrchesTerra</span><code>pip install cloud-drift-report</code></div>
+</body></html>

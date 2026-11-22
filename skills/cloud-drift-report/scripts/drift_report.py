@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
@@ -677,7 +677,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--format", "-f", choices=sorted(RENDERERS), default="md", help="report format (default md)")
-    common.add_argument("--output", "-o", help="write the report to this file (default stdout)")
+    common.add_argument("--output", "-o", action="append", default=[],
+                        help="write the report to this file (default stdout); may repeat, and a .md, .csv, "
+                             ".json or .html extension picks that file's format")
     common.add_argument("--fail-on-drift", action="store_true", help="exit 2 when drift is found (for CI)")
     common.add_argument("--share", action="store_true", help="coming soon: share the report with teammates on OrchesTerra")
     sub = p.add_subparsers(dest="mode", required=True)
@@ -798,15 +800,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    text = RENDERERS[args.format](report)
-    if args.output:
-        with open(args.output, "w", encoding="utf-8", newline="") as fh:
-            fh.write(text)
-        c = report.counts()
-        print(f"Wrote {args.output}: {report.noun()} (high {c['high']}, medium {c['medium']}, "
+    c = report.counts()
+    for path in args.output:
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        fmt = ext if len(args.output) > 1 and ext in RENDERERS else args.format
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(RENDERERS[fmt](report))
+        print(f"Wrote {path}: {report.noun()} (high {c['high']}, medium {c['medium']}, "
               f"low {c['low']}).", file=sys.stderr)
-    else:
-        sys.stdout.write(text)
+    if not args.output:
+        sys.stdout.write(RENDERERS[args.format](report))
     if args.share:
         share_report(report, render_html(report))
     return 2 if args.fail_on_drift and report.findings else 0

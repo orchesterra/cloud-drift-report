@@ -10,11 +10,17 @@ file or stack knows about. It ranks them by severity and explains each one in pl
 | CloudFormation drift | ✅ | — |
 | Resources not in any IaC | ✅ | planned |
 
-It ships three ways, from the same code:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/orchesterra/cloud-drift-report/main/docs/report-screenshot.png"
+       alt="HTML drift report: six drifted resources ranked high, medium and low, with before and after values and what probably happened" width="820">
+</p>
+
+It ships four ways, from the same code:
 
 - a **command-line tool** (`cloud-drift-report`)
 - a **Claude skill** (Claude Code, Claude desktop and claude.ai)
 - a **Cursor skill**, plus a Cursor rule for older versions
+- a **GitHub Action** (`orchesterra/cloud-drift-report@v0`)
 
 It never writes to AWS or to Terraform state, sends no telemetry and needs no account.
 
@@ -116,8 +122,9 @@ the tool reads; see [Safety](#safety) for the exact calls.
 
 ### In GitHub Actions
 
-Run it on a schedule with a read-only role (no stored keys, using GitHub's OIDC). The job fails when something
-drifted or is not in IaC, and the HTML report is kept as an artifact:
+Use the action. It posts the report on the run's summary page, keeps the HTML, Markdown and JSON reports as
+an artifact, and fails the job when something drifted or is not in IaC. With GitHub's OIDC and a read-only
+role, no keys are stored:
 
 ```yaml
 name: drift-report
@@ -136,19 +143,29 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/drift-report-readonly
           aws-region: us-east-1
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install cloud-drift-report
-      - run: >
-          cloud-drift-report unmanaged --state s3://acme-tf-state/prod/
-          --format html -o not-in-iac.html --fail-on-drift
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with: { name: drift-report, path: not-in-iac.html }
+      - uses: orchesterra/cloud-drift-report@v0
+        with:
+          mode: unmanaged
+          args: --region us-east-1 --state s3://acme-tf-state/prod/
 ```
 
-For Terraform drift in CI, add `hashicorp/setup-terraform` or `opentofu/setup-opentofu`, run `init` in your
-directory, then `cloud-drift-report terraform --dir ./infra --fail-on-drift`.
+Terraform/OpenTofu drift: add `hashicorp/setup-terraform` or `opentofu/setup-opentofu` and run `init`, then use
+`mode: terraform` with `args: --dir ./infra`. CloudFormation: `mode: cloudformation` with
+`args: --region us-east-1`.
+
+| Input | Default | |
+|---|---|---|
+| `mode` | (required) | `terraform`, `cloudformation` or `unmanaged` |
+| `args` | | the mode's flags, as on the command line |
+| `fail-on-drift` | `true` | fail the step when anything is found |
+| `upload-report` | `true` | keep the reports as a workflow artifact |
+| `report-name` | `cloud-drift-report` | the artifact's name |
+
+Outputs: `findings` (count), `high` (high-severity count) and `report-dir` (folder with `report.html`,
+`report.md` and `report.json`), for example to post to Slack only when `high` is not `0`.
+
+Without the action: `pip install cloud-drift-report`, then run the CLI with `-o report.html -o report.md`
+(each file takes the format of its extension) and `--fail-on-drift`.
 
 ## Examples
 

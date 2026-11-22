@@ -1,0 +1,93 @@
+name: Cloud Drift Report by OrchesTerra
+description: Read-only drift report for Terraform/OpenTofu and CloudFormation, plus AWS resources not in any IaC.
+author: OrchesTerra
+branding:
+  icon: search
+  color: purple
+
+inputs:
+  mode:
+    description: "terraform, cloudformation or unmanaged (AWS resources no state file or stack lists)"
+    required: true
+  args:
+    description: >
+      Extra arguments for the mode, for example `--dir ./infra`, `--region us-east-1 --stack api`,
+      or `--region us-east-1 --state s3://my-tf-state/prod/`.
+    required: false
+    default: ""
+  fail-on-drift:
+    description: "Fail the step when drift (or a resource not in IaC) is found"
+    required: false
+    default: "true"
+  upload-report:
+    description: "Upload the HTML, Markdown and JSON reports as a workflow artifact"
+    required: false
+    default: "true"
+  report-name:
+    description: "Artifact name for the reports"
+    required: false
+    default: "cloud-drift-report"
+
+outputs:
+  findings:
+    description: "Number of drifted resources (or resources not in IaC)"
+    value: ${{ steps.report.outputs.findings }}
+  high:
+    description: "Number of high-severity findings"
+    value: ${{ steps.report.outputs.high }}
+  report-dir:
+    description: "Folder with report.html, report.md and report.json"
+    value: ${{ steps.report.outputs.dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install cloud-drift-report
+      shell: bash
+      # Own virtual environment: newer runner images refuse pip installs into the system Python.
+      run: |
+        python3 -m venv "$RUNNER_TEMP/cloud-drift-report-venv"
+        "$RUNNER_TEMP/cloud-drift-report-venv/bin/pip" install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH"
+        echo "$RUNNER_TEMP/cloud-drift-report-venv/bin" >> "$GITHUB_PATH"
+
+    - name: Run cloud-drift-report
+      id: report
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        ARGS: ${{ inputs.args }}
+        OUT: ${{ runner.temp }}/cloud-drift-report
+      run: |
+        mkdir -p "$OUT"
+        set +e
+        # ARGS is split on spaces on purpose so several flags can be passed in one input.
+        # shellcheck disable=SC2086
+        cloud-drift-report "$MODE" $ARGS -o "$OUT/report.md" -o "$OUT/report.html" -o "$OUT/report.json"
+        code=$?
+        set -e
+        if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+          echo "::error::cloud-drift-report failed (exit $code); see the log above."
+          exit "$code"
+        fi
+        python3 - "$OUT/report.json" >> "$GITHUB_OUTPUT" <<'PY'
+        import json, sys
+        s = json.load(open(sys.argv[1]))["summary"]
+        print(f"findings={s['total']}")
+        print(f"high={s['high']}")
+        PY
+        echo "dir=$OUT" >> "$GITHUB_OUTPUT"
+        cat "$OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload reports
+      if: inputs.upload-report == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.report-name }}
+        path: ${{ steps.report.outputs.dir }}
+
+    - name: Fail on drift
+      if: inputs.fail-on-drift == 'true' && steps.report.outputs.findings != '0'
+      shell: bash
+      run: |
+        echo "::error::${{ steps.report.outputs.findings }} finding(s); see the job summary or the report artifact."
+        exit 2

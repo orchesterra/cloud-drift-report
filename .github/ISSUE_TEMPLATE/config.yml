@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/orchesterra/cloud-drift-report/discussions
+    about: Ask how to use it or share what you built with it.
+  - name: Continuous drift detection with approvals and fixes
+    url: https://www.orchesterra.in/?utm_source=github&utm_medium=issue-template
+    about: OrchesTerra runs this across all your AWS accounts, every day.

@@ -11,6 +11,9 @@ Claude reads `skills/cloud-drift-report/SKILL.md` and Cursor reads `cursor/rules
   reading state and stacks, matching).
 - `tests/`: pytest with fake AWS clients and a fake plan. No network or AWS access.
 - `examples/`: sample reports. Regenerate with `python3 examples/generate.py` after changing output.
+- `action.yml`: the GitHub Action (installs this repo into its own venv and runs the CLI). CI runs it on
+  the sample plan.
+- `docs/`: README screenshot and the social preview card (`social-preview.html`, rendered to PNG).
 
 ## Rules
 

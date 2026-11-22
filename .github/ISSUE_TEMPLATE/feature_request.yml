@@ -1,0 +1,12 @@
+name: Feature request
+description: A resource type, a cloud, an output format or anything else you'd like
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: "What would you like, and what problem does it solve?"
+    validations: { required: true }
+  - type: dropdown
+    id: cloud
+    attributes: { label: Cloud, options: [AWS, Azure, Google Cloud, Oracle Cloud, Any] }

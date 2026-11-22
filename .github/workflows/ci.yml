@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python }}" }
+      - run: pip install '.[test]'
+      - run: pytest -q
+
+  action:
+    # Runs the action itself on the sample plan, with no cloud access.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: drift
+        uses: ./
+        with:
+          mode: terraform
+          args: --plan-json tests/fixtures/refresh_plan.json
+          fail-on-drift: "false"
+          report-name: sample-report
+      - name: Check outputs
+        run: |
+          test "${{ steps.drift.outputs.findings }}" = "6"
+          test "${{ steps.drift.outputs.high }}" = "3"
+          test -s "${{ steps.drift.outputs.report-dir }}/report.html"

@@ -1,0 +1,28 @@
+name: Wrong "not in IaC" result
+description: A resource shows as not in IaC although Terraform or a stack manages it, or the other way round
+labels: [matching]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These help most when they include the ID formats. **Redact account IDs and names** you don't want public,
+        but keep the shape (for example `arn:aws:sqs:us-east-1:111111111111:my-queue`).
+  - type: input
+    id: type
+    attributes: { label: Resource type, description: "Terraform type (aws_sqs_queue) or CloudFormation type" }
+    validations: { required: true }
+  - type: dropdown
+    id: direction
+    attributes:
+      label: What went wrong
+      options: ["Reported as not in IaC, but it is managed", "Managed elsewhere is fine, but this one was missed", "AWS created it; it should be skipped"]
+    validations: { required: true }
+  - type: textarea
+    id: live
+    attributes: { label: ID or ARN in the report, render: text }
+  - type: textarea
+    id: iac
+    attributes:
+      label: How IaC records it
+      description: "The state's `id` / `arn` / `name` attributes, or the stack's PhysicalResourceId (values only, redacted)"
+      render: text

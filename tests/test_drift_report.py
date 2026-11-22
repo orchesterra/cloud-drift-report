@@ -327,3 +327,12 @@ def test_script_runs_standalone():
                           capture_output=True, text=True, env={**os.environ, "PYTHONPATH": ""})
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["summary"]["total"] == 6
+
+
+def test_several_outputs_take_their_format_from_the_extension(tmp_path):
+    md, html_, js = tmp_path / "r.md", tmp_path / "r.html", tmp_path / "r.json"
+    code = dr.main(["terraform", "--plan-json", str(FIXTURE), "-o", str(md), "-o", str(html_), "-o", str(js)])
+    assert code == 0
+    assert md.read_text().startswith("# Drift report")
+    assert html_.read_text().startswith("<!doctype html>")
+    assert json.loads(js.read_text())["summary"]["total"] == 6

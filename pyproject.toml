@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloud-drift-report"
-version = "0.2.0"
+version = "0.2.1"
 description = "Read-only drift and not-in-IaC report for Terraform/OpenTofu (any cloud) and AWS CloudFormation"
 readme = "README.md"
 license = "Apache-2.0"
