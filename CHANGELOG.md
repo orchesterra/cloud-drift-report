@@ -5,6 +5,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-22
+
 ### Added
 - When a JSON report is written, the CLI prints a link to OrchesTerra's import page, where you can drop the
   file to view it. `--share` now prints the same instructions instead of "coming soon". Nothing is uploaded.
@@ -49,7 +51,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/orchesterra/cloud-drift-report/releases/tag/v0.2.0
