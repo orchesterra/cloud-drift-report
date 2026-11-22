@@ -38,7 +38,16 @@ python3 examples/generate.py   # if report output changed
 Add a test for every new resource type, AWS-owned rule or matching change. A wrong match shows a managed
 resource as "not in IaC" (or hides an unmanaged one), so cover both directions.
 
+## Changes
+
+`main` only takes pull requests, and the `ci` checks must pass before merging. Work on a branch, add a line under
+`[Unreleased]` in `CHANGELOG.md` for anything a user would notice, open a PR, and squash-merge when CI is green.
+
 ## Releases
 
-Bump `version` in `pyproject.toml` and `__version__` in `drift_report.py`, then publish a GitHub release
-tagged `v<version>`. The `publish` workflow tests, builds and uploads to PyPI through Trusted Publishing.
+1. In a PR: bump `version` in `pyproject.toml`, `__version__` in `drift_report.py` and `version` in
+   `.claude-plugin/plugin.json` and `.cursor-plugin/plugin.json`. Move the `[Unreleased]` notes in
+   `CHANGELOG.md` under the new version, with the date and compare link. Regenerate the examples.
+2. After it merges, publish a GitHub release tagged `v<version>` on `main`. Use that version's changelog
+   section as the notes. The `publish` workflow tests, builds and uploads to PyPI through Trusted Publishing.
+3. Move the Action's major tag: `git tag -f v0 v<version> && git push -f origin refs/tags/v0`.
