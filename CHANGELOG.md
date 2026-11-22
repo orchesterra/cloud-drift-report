@@ -5,6 +5,10 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- When a JSON report is written, the CLI prints a link to OrchesTerra's import page, where you can drop the
+  file to view it. `--share` now prints the same instructions instead of "coming soon". Nothing is uploaded.
+
 ## [0.3.0] - 2026-11-22
 
 ### Added

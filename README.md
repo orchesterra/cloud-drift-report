@@ -282,10 +282,13 @@ Regenerate them with `python3 examples/generate.py`.
   `cloudformation:DetectStackDrift` for CloudFormation drift and whatever read permissions your Terraform
   provider needs to refresh.
 
-## Coming soon: `--share`
+## See a report in OrchesTerra
 
-`--share` will upload the HTML report to OrchesTerra as a private page your teammates can open. It is not
-live yet: the flag currently prints a note and uploads nothing. It will always be opt-in.
+Save the report as JSON (`-f json -o report.json`) and drop the file on OrchesTerra's
+[import page](https://app.orchesterra.in/cloud-operations?section=settings&tab=import-report&utm_source=drift-skill&utm_medium=oss)
+(free 14-day trial). It shows as a read-only snapshot, and you can connect the account to keep it up to date and
+fix findings from there. The CLI never uploads anything itself: when it writes a JSON report it prints the link,
+and `--share` prints the same instructions.
 
 ## Why we built it
 

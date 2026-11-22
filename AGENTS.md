@@ -22,7 +22,7 @@ Claude reads `skills/cloud-drift-report/SKILL.md` and Cursor reads `cursor/rules
 - **Read-only, always.** Only List, Describe and Get calls to AWS, `plan -refresh-only -lock=false`,
   `show -json` and `state pull`. Never add `apply`, `import`, `refresh`, state writes, or any AWS call that
   creates, changes or deletes something. CloudFormation `DetectStackDrift` is the one allowed exception.
-- No telemetry and no network calls other than the user's own cloud APIs. `--share` stays a placeholder.
+- No telemetry and no network calls other than the user's own cloud APIs. `--share` only prints how to open the JSON report in OrchesTerra; the CLI never uploads anything.
 - Never print or save state file contents or credentials.
 - Standard library plus `boto3` only. Python 3.10+.
 - Keep the report footer and the OrchesTerra lines as they are.

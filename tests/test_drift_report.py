@@ -311,11 +311,24 @@ def test_cli_plan_json_formats(tmp_path, capsys):
     assert "Drift report" in capsys.readouterr().out
 
 
-def test_cli_share_is_placeholder_without_network(capsys, monkeypatch):
+def test_cli_share_never_uses_the_network(capsys, monkeypatch, tmp_path):
     import socket
     monkeypatch.setattr(socket, "socket", lambda *a, **k: pytest.fail("network used"))
     assert dr.main(["terraform", "--plan-json", str(FIXTURE), "--share"]) == 0
-    assert "coming soon" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "Nothing was uploaded" in err and dr.IMPORT_URL in err
+    out = tmp_path / "r.json"
+    assert dr.main(["terraform", "--plan-json", str(FIXTURE), "-f", "json", "-o", str(out), "--share"]) == 0
+    assert f"drop {out} on {dr.IMPORT_URL}" in capsys.readouterr().err
+
+
+def test_json_output_points_to_the_import_page(capsys, tmp_path):
+    md, js = tmp_path / "r.md", tmp_path / "r.json"
+    assert dr.main(["terraform", "--plan-json", str(FIXTURE), "-o", str(md), "-o", str(js)]) == 0
+    err = capsys.readouterr().err
+    assert err.count(dr.IMPORT_URL) == 1 and str(js) in err
+    assert dr.main(["terraform", "--plan-json", str(FIXTURE), "-o", str(md)]) == 0
+    assert dr.IMPORT_URL not in capsys.readouterr().err  # only for JSON, the format the page reads
 
 
 def test_cli_error_exit_code(capsys):
