@@ -225,8 +225,8 @@ Regenerate them with `python3 examples/generate.py`.
 
 ## Safety
 
-- Terraform: only `plan -refresh-only -lock=false` and `show -json`. No `apply`, `import`, `state` or
-  `refresh`. The plan file goes to a temporary folder and is deleted. Sensitive values are masked.
+- Terraform: only `plan -refresh-only -lock=false` and `show -json` (plus a read-only `state pull` when the
+  not-in-IaC scan's `--state` is a directory). No `apply`, `import`, `refresh` or state-changing `state` commands. The plan file goes to a temporary folder and is deleted. Sensitive values are masked.
 - CloudFormation: `DetectStackDrift`, `DescribeStackDriftDetectionStatus`, `DescribeStackResourceDrifts`
   and `ListStacks`. Drift detection records a check on the stack; nothing else changes.
 - Not in IaC: only List, Describe and Get calls (Cloud Control `ListResources`, plus a few service list calls

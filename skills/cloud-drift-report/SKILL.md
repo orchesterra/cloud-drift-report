@@ -16,8 +16,9 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
 
 ## Safety rules
 
-- Read-only. Never run `apply`, `import`, `state` subcommands, `refresh` (the old command writes state),
-  or any AWS call that changes resources. Never edit `.tfstate` files.
+- Read-only. Never run `apply`, `import`, `refresh` (the old command writes state), state-changing `state`
+  subcommands, or any AWS call that changes resources. Never edit `.tfstate` files. The CLI's own read-only
+  `state pull` (used when `--state` is a directory) is fine.
 - The script runs `plan -refresh-only -lock=false` into a temporary plan file and reads it with `show -json`.
   That does not write state or take the state lock.
 - CloudFormation `DetectStackDrift` is allowed: it only records a drift check on the stack.
