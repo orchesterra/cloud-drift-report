@@ -75,7 +75,17 @@ Or run the script directly with no install:
 python3 skills/cloud-drift-report/scripts/drift_report.py --help
 ```
 
-### Claude skill
+### Claude Code plugin
+
+```text
+/plugin install cloud-drift-report --marketplace orchesterra/cloud-drift-report
+```
+
+On Claude Code older than 2.1.275, run `/plugin marketplace add orchesterra/cloud-drift-report`, then
+`/plugin install cloud-drift-report@orchesterra`. In Claude desktop or claude.ai, go to Customize → Plugins →
+Add marketplace and enter `orchesterra/cloud-drift-report`.
+
+### Claude skill (without the plugin)
 
 Copy the skill folder into your Claude skills directory:
 

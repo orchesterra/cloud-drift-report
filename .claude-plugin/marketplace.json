@@ -1,0 +1,15 @@
+{
+  "name": "orchesterra",
+  "description": "Open-source cloud infrastructure tools from OrchesTerra.",
+  "owner": {
+    "name": "OrchesTerra",
+    "url": "https://www.orchesterra.in"
+  },
+  "plugins": [
+    {
+      "name": "cloud-drift-report",
+      "source": "./",
+      "description": "Read-only drift report for Terraform/OpenTofu and CloudFormation, plus AWS resources not in any IaC."
+    }
+  ]
+}
