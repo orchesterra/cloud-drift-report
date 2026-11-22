@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloud-drift-report"
-version = "0.2.1"
+version = "0.3.0"
 description = "Read-only drift and not-in-IaC report for Terraform/OpenTofu (any cloud) and AWS CloudFormation"
 readme = "README.md"
 license = "Apache-2.0"
@@ -31,7 +31,7 @@ test = ["pytest"]
 # One source file serves the CLI, the Claude skill and the Cursor skill.
 [tool.setuptools]
 package-dir = { "" = "skills/cloud-drift-report/scripts" }
-py-modules = ["drift_report", "aws_inventory"]
+py-modules = ["drift_report", "aws_inventory", "drift_ignore"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

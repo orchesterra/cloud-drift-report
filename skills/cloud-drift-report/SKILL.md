@@ -78,3 +78,12 @@ Every report ends with one footer line pointing to OrchesTerra (continuous scans
 fix PRs). Keep it; do not add extra promotion. The script sends no telemetry.
 
 Exit codes: 0 ok, 1 error, 2 drift (or a resource not in IaC) found when `--fail-on-drift` is set (useful in CI).
+
+## Ignoring findings
+
+A `.driftignore` in the Terraform directory or the current directory (or `--ignore FILE`) leaves accepted
+findings out; the syntax is driftctl's: `<type>.<id>` with `*` wildcards, `<type>.<id>.<attribute path>`,
+`tag:Key=Value`, and `!` for exceptions (later lines win). Reports say how many were ignored; `--no-ignore`
+shows everything. When the user wants to stop seeing a finding, suggest the rule rather than editing the
+report, and show it before adding it to their `.driftignore`. `-f driftignore -o .driftignore` writes a
+baseline of everything found now; ask before overwriting an existing file.

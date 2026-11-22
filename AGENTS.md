@@ -9,6 +9,8 @@ Claude reads `skills/cloud-drift-report/SKILL.md` and Cursor reads `cursor/rules
   report rendering (md, csv, json, html).
 - `skills/cloud-drift-report/scripts/aws_inventory.py`: the not-in-IaC scan (listing AWS, AWS-owned rules,
   reading state and stacks, matching).
+- `skills/cloud-drift-report/scripts/drift_ignore.py`: `.driftignore` rules. `tests/fixtures/driftignore_cases.json`
+  is shared with OrchesTerra; a syntax change needs a new case there.
 - `tests/`: pytest with fake AWS clients and a fake plan. No network or AWS access.
 - `examples/`: sample reports. Regenerate with `python3 examples/generate.py` after changing output.
 - `action.yml`: the GitHub Action (installs this repo into its own venv and runs the CLI). CI runs it on

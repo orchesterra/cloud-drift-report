@@ -18,6 +18,9 @@ Run the `cloud-drift-report` CLI (`pip install cloud-drift-report`, or `python3 
   --state s3://<bucket>/<prefix>/` (`--state` may repeat: a `.tfstate`, an S3 key or prefix, or an initialised
   directory; `--all-regions` for every region). Ask where the state lives; never print state contents.
 - Other formats: `--format html|csv|json -o <file>`; `--fail-on-drift` exits 2 for CI.
+- Accepted findings go in `.driftignore` (driftctl syntax: `aws_iam_role.*`, `<type>.<id>.<attribute>`,
+  `tag:Key=Value`, `!` exceptions); `--no-ignore` shows all; `-f driftignore -o .driftignore` writes a baseline
+  (ask before overwriting).
 
 Rules: read-only. Never run `apply`, `import`, `refresh` or state-changing `state` commands (the CLI's own read-only `state pull` is fine), never edit state files, never
 change AWS resources. CloudFormation `DetectStackDrift` is allowed; the not-in-IaC scan only lists and describes. Ask for the AWS profile and region if

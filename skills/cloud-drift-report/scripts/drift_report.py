@@ -34,12 +34,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
 
 SEVERITIES = ("high", "medium", "low")
+FILENAME_HINT = ".driftignore"
 CHANGED = "changed outside IaC"
 DELETED = "deleted outside IaC"
 UNMANAGED = "not in IaC"
@@ -117,6 +118,7 @@ class Finding:
     physical_id: str = ""
     severity: str = "medium"
     explanation: str = ""
+    tags: dict[str, str] = field(default_factory=dict, repr=False)  # for tag: ignore rules; not in reports
 
 
 def finalize(f: Finding) -> Finding:
@@ -257,6 +259,10 @@ def diff_attributes(before: Any, after: Any, before_sensitive: Any = None,
     return changes
 
 
+def _str_tags(raw: Any) -> dict[str, str]:
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
 def parse_plan_json(plan: dict, location: str = "") -> list[Finding]:
     """Parse `terraform/tofu show -json <planfile>` output (the resource_drift list)."""
     findings = []
@@ -275,6 +281,7 @@ def parse_plan_json(plan: dict, location: str = "") -> list[Finding]:
             source="terraform", location=location, address=rc.get("address", ""),
             type=rc.get("type", ""), action=action, changes=changes,
             physical_id=str(before.get("arn") or before.get("id") or ""),
+            tags=_str_tags(before.get("tags_all") or before.get("tags")),
         )))
     return findings
 
@@ -436,6 +443,32 @@ def cfn_client(profile: str | None, region: str | None):
     return session.client("cloudformation"), session.region_name
 
 
+# --- ignore rules ------------------------------------------------------------
+
+def apply_ignore(report: "Report", rules: list, files: list[str] | None = None) -> "Report":
+    """Move findings that .driftignore rules cover out of the report, and drop ignored attributes."""
+    import drift_ignore as ignore
+
+    report.ignore_files = list(files or [])
+    if not rules:
+        return report
+    kept = []
+    for f in report.findings:
+        outcome = ignore.evaluate(rules, f)
+        if outcome.ignored:
+            report.ignored.append((f, outcome.rule))
+            continue
+        if outcome.dropped_paths:
+            f.changes = [c for c in f.changes if c.path not in outcome.dropped_paths]
+            finalize(f)
+        kept.append(f)
+    report.findings = kept
+    if report.coverage:
+        report.coverage["not_in_iac"] = len(kept)
+        report.coverage["ignored"] = len(report.ignored)
+    return report
+
+
 # --- reports ---------------------------------------------------------------
 
 @dataclass
@@ -446,6 +479,16 @@ class Report:
     generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
     checked: dict[str, str] = field(default_factory=dict)  # CloudFormation stack -> drift status
     coverage: dict[str, Any] = field(default_factory=dict)  # not-in-IaC scan totals
+    ignored: list[tuple[Finding, str]] = field(default_factory=list)  # (finding, .driftignore line)
+    ignore_files: list[str] = field(default_factory=list)
+    ignore_text: str = ""  # the rules as written, kept when a new .driftignore is generated
+
+    def ignored_line(self) -> str:
+        if not self.ignored:
+            return ""
+        n = len(self.ignored)
+        return (f"{n} finding{'' if n == 1 else 's'} ignored by {', '.join(self.ignore_files) or FILENAME_HINT}"
+                " (run with --no-ignore to see everything).")
 
     def noun(self, n: int | None = None) -> str:
         n = len(self.findings) if n is None else n
@@ -511,6 +554,8 @@ def render_markdown(r: Report) -> str:
         out += ["", coverage_line(r.coverage)]
     if r.checked:
         out += ["", "Stacks checked: " + ", ".join(f"{k} ({v})" for k, v in r.checked.items())]
+    if r.ignored:
+        out += ["", r.ignored_line()]
     if r.findings and r.source == "aws":
         out += ["", "| Severity | Resource | Region | Type | ID or ARN | What probably happened |", "|---|---|---|---|---|---|"]
         for f in r.sorted():
@@ -544,17 +589,29 @@ def render_csv(r: Report) -> str:
                         ch.path, "" if ch.before is None else _fmt_value(ch.before, 10_000),
                         "" if ch.after is None else _fmt_value(ch.after, 10_000), f.explanation])
     w.writerow([])
+    if r.ignored:
+        w.writerow([f"# {r.ignored_line()}"])
     w.writerow([f"# {FOOTER}"])
     return buf.getvalue()
+
+
+def _finding_json(f: Finding) -> dict[str, Any]:
+    d = asdict(f)
+    d.pop("tags", None)
+    return d
 
 
 def render_json(r: Report) -> str:
     doc = {
         "tool": "cloud-drift-report", "version": __version__, "source": r.source, "target": r.target,
-        "generated_at": r.generated_at, "summary": {"total": len(r.findings), **r.counts()},
+        "schema": 1,
+        "generated_at": r.generated_at,
+        "summary": {"total": len(r.findings), **r.counts(), **({"ignored": len(r.ignored)} if r.ignored else {})},
         "stacks_checked": r.checked or None,
         "coverage": r.coverage or None,
-        "findings": [asdict(f) for f in r.sorted()],
+        "findings": [_finding_json(f) for f in r.sorted()],
+        "ignored": [{"type": f.type, "address": f.address, "physical_id": f.physical_id, "location": f.location,
+                     "rule": rule} for f, rule in r.ignored] or None,
         "note": r.pr_line() or None, "footer": FOOTER,
     }
     return json.dumps({k: v for k, v in doc.items() if v is not None}, indent=2, default=str) + "\n"
@@ -621,6 +678,8 @@ def render_html(r: Report) -> str:
     checked = f"<p class=meta>{e(coverage_line(r.coverage))}</p>" if r.coverage else ""
     if r.checked:
         checked += "<p class=meta>Stacks checked: " + ", ".join(f"{e(k)} ({e(v)})" for k, v in r.checked.items()) + "</p>"
+    if r.ignored:
+        checked += f"<p class=meta>{e(r.ignored_line())}</p>"
     if r.findings:
         body = (
             "<div class=tiles>"
@@ -650,7 +709,32 @@ def render_html(r: Report) -> str:
         f"{body}<footer>{footer_html}</footer></main><script>{_HTML_JS}</script></body></html>\n")
 
 
-RENDERERS = {"md": render_markdown, "csv": render_csv, "json": render_json, "html": render_html}
+def render_driftignore(r: Report) -> str:
+    """One rule per finding, to accept everything found today and report only what's new later."""
+    import drift_ignore as ignore
+
+    out = [f"# .driftignore generated by cloud-drift-report {__version__} on {r.generated_at}",
+           f"# from {r.target}. Delete a line to report that resource again.", ""]
+    if r.ignore_text.strip():
+        out += [f"# Rules already in {', '.join(r.ignore_files)}:", r.ignore_text.rstrip("\n"), "",
+                "# Found in this run:" if r.findings else "# Nothing new found in this run."]
+    for f in r.sorted():
+        if f.action == CHANGED and f.changes:
+            what = ", ".join(c.path for c in f.changes[:3]) + (" …" if len(f.changes) > 3 else "")
+        else:
+            what = f.action
+        out.append(f"# {f.severity}: {f.address} ({what})")
+        rid = f.physical_id or f.address
+        if rid.startswith("arn:"):  # the short id reads better and still matches (see candidate_ids)
+            rid = ignore.short_id(rid)
+        elif "://" in rid and f.address:  # a queue's name or logical id rather than its URL
+            rid = f.address
+        out.append(f"{f.type}.{ignore.escape_id(rid)}")
+    return "\n".join(out) + "\n"
+
+
+RENDERERS = {"md": render_markdown, "csv": render_csv, "json": render_json, "html": render_html,
+             "driftignore": render_driftignore}
 
 
 # --- CLI ------------------------------------------------------------------
@@ -681,6 +765,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="write the report to this file (default stdout); may repeat, and a .md, .csv, "
                              ".json or .html extension picks that file's format")
     common.add_argument("--fail-on-drift", action="store_true", help="exit 2 when drift is found (for CI)")
+    common.add_argument("--ignore", action="append", default=[], metavar="FILE",
+                        help="ignore rules (driftctl .driftignore syntax); may repeat "
+                             "(default: .driftignore in --dir and in the current directory)")
+    common.add_argument("--no-ignore", action="store_true", help="report everything, ignoring any .driftignore")
     common.add_argument("--share", action="store_true", help="coming soon: share the report with teammates on OrchesTerra")
     sub = p.add_subparsers(dest="mode", required=True)
 
@@ -763,7 +851,8 @@ def run_unmanaged(args, log=print) -> Report:
     result = inv_mod.match(inventory, iac)
     findings = [finalize(Finding(
         source="aws", location=res.region or "global", address=res.name or res.identifier, type=res.tf_type,
-        action=UNMANAGED, physical_id=res.arn or res.identifier)) for res in result.unmanaged]
+        action=UNMANAGED, physical_id=res.arn or res.identifier, tags=inv_mod._tag_map(res.props.get("Tags"))))
+        for res in result.unmanaged]
     try:
         account = session.client("sts").get_caller_identity()["Account"]
     except Exception:
@@ -774,6 +863,17 @@ def run_unmanaged(args, log=print) -> Report:
         "regions": regions, "iac_sources": sources, "not_listed": inventory.not_listed or None,
     }
     return Report(findings, "aws", f"{account} ({', '.join(regions)})", coverage=coverage)
+
+
+def ignore_files(args) -> list[str]:
+    """--ignore files (which must exist), else .driftignore in --dir and the current directory."""
+    if args.ignore:
+        missing = [p for p in args.ignore if not os.path.isfile(p)]
+        if missing:
+            raise OSError(f"{', '.join(missing)} not found")
+        return list(args.ignore)
+    dirs = [os.path.abspath(getattr(args, "dir", None) or "."), os.path.abspath(".")]
+    return list(dict.fromkeys(os.path.join(d, FILENAME_HINT) for d in dirs))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -800,10 +900,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    if not args.no_ignore:
+        import drift_ignore as ignore
+
+        try:
+            rules, used = ignore.load(ignore_files(args), warn=lambda m: print(f"warning: {m}", file=sys.stderr))
+        except OSError as exc:
+            print(f"error: could not read ignore file: {exc}", file=sys.stderr)
+            return 1
+        # Relative names in reports, so they never show a home directory.
+        apply_ignore(report, rules, [os.path.relpath(u) if not os.path.relpath(u).startswith("..")
+                                     else os.path.basename(u) for u in used])
+        report.ignore_text = "\n".join(open(u, encoding="utf-8").read().rstrip("\n") for u in used)
+        if report.ignored:
+            print(report.ignored_line(), file=sys.stderr)
+
     c = report.counts()
     for path in args.output:
-        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        ext = os.path.splitext(path)[1].lstrip(".").lower() or os.path.basename(path).lstrip(".").lower()
         fmt = ext if len(args.output) > 1 and ext in RENDERERS else args.format
+        if os.path.basename(path) == FILENAME_HINT:  # never write a report over an ignore file
+            fmt = "driftignore"
         with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.write(RENDERERS[fmt](report))
         print(f"Wrote {path}: {report.noun()} (high {c['high']}, medium {c['medium']}, "

@@ -165,7 +165,8 @@ Outputs: `findings` (count), `high` (high-severity count) and `report-dir` (fold
 `report.md` and `report.json`), for example to post to Slack only when `high` is not `0`.
 
 Without the action: `pip install cloud-drift-report`, then run the CLI with `-o report.html -o report.md`
-(each file takes the format of its extension) and `--fail-on-drift`.
+(each file takes the format of its extension) and `--fail-on-drift`. The action reads a `.driftignore` in the
+working directory; add `--ignore path/to/file` to `args` for another location.
 
 ## Examples
 
@@ -197,6 +198,41 @@ Exit codes: `0` ok, `1` error, `2` drift or a resource not in IaC found with `--
 `--state` takes a local `.tfstate` file, `s3://bucket/key.tfstate`, `s3://bucket/prefix/` (every `.tfstate`
 under it) or an initialised Terraform directory (read with `state pull`). It may repeat. Without `--state`,
 only CloudFormation stacks count as IaC.
+
+## Ignoring findings: `.driftignore`
+
+Put a `.driftignore` in the Terraform directory or the folder you run from (or pass `--ignore FILE`). The
+syntax is driftctl's, so an existing driftctl file works as it is:
+
+```gitignore
+# whole resources: <type>.<id>, where * and ? are wildcards; a bare type means every resource of that type
+aws_s3_bucket.cloudtrail-logs-*
+aws_iam_role.*
+AWS::SQS::Queue.*DLQ
+# one attribute (Terraform and CloudFormation drift): <type>.<id>.<attribute path>
+aws_instance.i-0abc123.tags.LastPatched
+aws_security_group.*.ingress
+# a dot that is part of the id needs a backslash when an attribute follows
+aws_s3_bucket.logs\.example\.com.tags
+# any resource with a tag (tag:Key matches any value)
+tag:ManagedBy=karpenter
+# exceptions: later lines win, as in .gitignore
+!aws_iam_role.prod-admin
+```
+
+`<id>` can be the AWS id, the ARN or its last part, the Terraform resource name or address, or the
+CloudFormation logical id. Ignored findings leave the totals and don't fail `--fail-on-drift`, but every report
+says how many were ignored and the JSON lists each one with the rule that matched. `--no-ignore` shows
+everything. A line that isn't a valid rule prints a warning with its line number and is skipped.
+
+To accept what exists today and report only what's new from now on, write a baseline:
+
+```bash
+cloud-drift-report unmanaged --region us-east-1 --state s3://acme-tf-state/prod/ -f driftignore -o .driftignore
+```
+
+Each line has a comment above it saying what was found; delete a line to report that resource again.
+Rules already in the file are kept at the top, so running it again only adds what's new.
 
 ## Sample output
 

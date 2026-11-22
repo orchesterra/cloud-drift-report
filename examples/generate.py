@@ -15,7 +15,7 @@ import drift_report as dr  # noqa: E402
 from test_drift_report import DELETED_DRIFT, LAMBDA_DRIFT, SG_DRIFT, TAG_DRIFT, FakeCfn  # noqa: E402
 
 STAMP = "2026-11-20 09:00 UTC"
-EXT = {"md": "md", "csv": "csv", "json": "json", "html": "html"}
+EXT = {"md": "md", "csv": "csv", "json": "json", "html": "html", "driftignore": "driftignore"}
 
 
 def write(report, stem):

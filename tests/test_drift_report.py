@@ -269,6 +269,8 @@ def test_markdown(report):
 
 def test_no_drift_has_footer_but_no_pr_line():
     for fmt, render in dr.RENDERERS.items():
+        if fmt == "driftignore":  # a rules file, not a report
+            continue
         out = render(dr.Report([], "terraform", "x"))
         assert "drift-skill" in out, fmt
         assert "pull request in OrchesTerra" not in out, fmt
