@@ -739,17 +739,22 @@ RENDERERS = {"md": render_markdown, "csv": render_csv, "json": render_json, "htm
 
 # --- CLI ------------------------------------------------------------------
 
-SHARE_NOTE = ("--share is coming soon: it will upload this report to OrchesTerra as a private page your "
-              "teammates can open. Nothing was uploaded; the report was written locally only.")
+IMPORT_URL = ("https://app.orchesterra.in/cloud-operations?section=settings&tab=import-report"
+              "&utm_source=drift-skill&utm_medium=oss")
 
 
-def share_report(report: Report, rendered_html: str) -> None:
-    """Placeholder for the future --share flag.
+def import_hint(json_path: str) -> str:
+    return (f"To see this report in OrchesTerra, drop {json_path} on {IMPORT_URL} "
+            "(you upload it yourself; this tool sends nothing).")
 
-    Planned behaviour: POST the HTML report to an OrchesTerra endpoint and print a link teammates can open.
-    The endpoint does not exist yet, so this makes no network call. It must stay opt-in and never run by default.
-    """
-    print(SHARE_NOTE, file=sys.stderr)
+
+def share_report(json_paths: list[str]) -> None:
+    """--share prints how to open the report in OrchesTerra. It makes no network call and uploads nothing."""
+    if json_paths:
+        print(import_hint(json_paths[0]), file=sys.stderr)
+    else:
+        print("--share: save the report as JSON (-f json -o report.json), then drop it on "
+              f"{IMPORT_URL}. Nothing was uploaded.", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -769,7 +774,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ignore rules (driftctl .driftignore syntax); may repeat "
                              "(default: .driftignore in --dir and in the current directory)")
     common.add_argument("--no-ignore", action="store_true", help="report everything, ignoring any .driftignore")
-    common.add_argument("--share", action="store_true", help="coming soon: share the report with teammates on OrchesTerra")
+    common.add_argument("--share", action="store_true",
+                        help="print how to open the JSON report in OrchesTerra (uploads nothing)")
     sub = p.add_subparsers(dest="mode", required=True)
 
     tf = sub.add_parser("terraform", aliases=["tf", "tofu"], parents=[common],
@@ -916,6 +922,7 @@ def main(argv: list[str] | None = None) -> int:
             print(report.ignored_line(), file=sys.stderr)
 
     c = report.counts()
+    json_paths = []
     for path in args.output:
         ext = os.path.splitext(path)[1].lstrip(".").lower() or os.path.basename(path).lstrip(".").lower()
         fmt = ext if len(args.output) > 1 and ext in RENDERERS else args.format
@@ -923,12 +930,16 @@ def main(argv: list[str] | None = None) -> int:
             fmt = "driftignore"
         with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.write(RENDERERS[fmt](report))
+        if fmt == "json":
+            json_paths.append(path)
         print(f"Wrote {path}: {report.noun()} (high {c['high']}, medium {c['medium']}, "
               f"low {c['low']}).", file=sys.stderr)
     if not args.output:
         sys.stdout.write(RENDERERS[args.format](report))
     if args.share:
-        share_report(report, render_html(report))
+        share_report(json_paths)
+    elif json_paths and report.findings:
+        print(import_hint(json_paths[0]), file=sys.stderr)
     return 2 if args.fail_on_drift and report.findings else 0
 
 
