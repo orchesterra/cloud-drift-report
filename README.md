@@ -235,6 +235,20 @@ CloudFormation logical id. Ignored findings leave the totals and don't fail `--f
 says how many were ignored and the JSON lists each one with the rule that matched. `--no-ignore` shows
 everything. A line that isn't a valid rule prints a warning with its line number and is skipped.
 
+Resources that controllers and AWS services create for you are the usual noise in the not-in-IaC scan:
+
+```gitignore
+# AWS Load Balancer Controller (EKS ingresses and services): load balancers, target groups, security groups
+tag:elbv2.k8s.aws/cluster
+# EC2 nodes Karpenter launches
+tag:karpenter.sh/nodepool
+# log groups Lambda creates on first run (they carry no tags)
+aws_cloudwatch_log_group./aws/lambda/*
+```
+
+Resources in CloudFormation stacks already count as IaC, because the scan reads your stacks; add
+`tag:aws:cloudformation:stack-name` only for stacks in regions you don't scan, or with `--no-cloudformation`.
+
 To accept what exists today and report only what's new from now on, write a baseline:
 
 ```bash

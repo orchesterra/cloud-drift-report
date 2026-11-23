@@ -289,7 +289,7 @@ def _name(identifier: str, props: dict[str, Any]) -> str:
     for key in ("Name", "DomainName", "FunctionName", "GroupName", "RoleName", "UserName", "PolicyName",
                 "AliasName", "BucketName", "TableName", "QueueName", "TopicName", "ClusterName",
                 "LogGroupName", "RepositoryName", "StateMachineName", "PrefixListName", "RuleName",
-                "DBInstanceIdentifier", "LoadBalancerName"):
+                "DBInstanceIdentifier", "LoadBalancerName", "TargetGroupName"):
         value = props.get(key)
         if isinstance(value, str) and value:
             return value
@@ -561,12 +561,51 @@ def _cloudfront_policies(method, list_key, item_key):
     return _list
 
 
+# Cloud Control lists ELBv2 resources without tags, so tag: ignore rules (such as the
+# AWS Load Balancer Controller's elbv2.k8s.aws/cluster) could not match them.
+
+def _elbv2_tags(elb, arns: list[str]) -> dict[str, list[dict[str, str]]]:
+    out: dict[str, list[dict[str, str]]] = {}
+    for i in range(0, len(arns), 20):  # DescribeTags takes at most 20 ARNs
+        for d in elb.describe_tags(ResourceArns=arns[i:i + 20]).get("TagDescriptions") or []:
+            out[d["ResourceArn"]] = d.get("Tags") or []
+    return out
+
+
+def _load_balancers(s, r):
+    elb = s.client("elbv2", region_name=r)
+    lbs = _paginate(elb, "describe_load_balancers", "LoadBalancers")
+    tags = _elbv2_tags(elb, [lb["LoadBalancerArn"] for lb in lbs])
+    return [{"Identifier": lb["LoadBalancerArn"], "Properties": {
+        "LoadBalancerArn": lb["LoadBalancerArn"], "LoadBalancerName": lb.get("LoadBalancerName"),
+        "Tags": tags.get(lb["LoadBalancerArn"], [])}} for lb in lbs]
+
+
+def _target_groups(s, r):
+    elb = s.client("elbv2", region_name=r)
+    groups = _paginate(elb, "describe_target_groups", "TargetGroups")
+    tags = _elbv2_tags(elb, [g["TargetGroupArn"] for g in groups])
+    return [{"Identifier": g["TargetGroupArn"], "Properties": {
+        "TargetGroupArn": g["TargetGroupArn"], "TargetGroupName": g.get("TargetGroupName"),
+        "Tags": tags.get(g["TargetGroupArn"], [])}} for g in groups]
+
+
 def _lb_listeners(s, r):
     elb = s.client("elbv2", region_name=r)
-    out = []
-    for lb in _paginate(elb, "describe_load_balancers", "LoadBalancers"):
+    lbs = _paginate(elb, "describe_load_balancers", "LoadBalancers")
+    lb_tags = _elbv2_tags(elb, [lb["LoadBalancerArn"] for lb in lbs])
+    rows = []
+    for lb in lbs:
         for ln in _paginate(elb, "describe_listeners", "Listeners", LoadBalancerArn=lb["LoadBalancerArn"]):
-            out.append({"Identifier": ln["ListenerArn"], "Properties": {"Name": f"{lb.get('LoadBalancerName')}:{ln.get('Port')}"}})
+            rows.append((lb, ln))
+    own = _elbv2_tags(elb, [ln["ListenerArn"] for _, ln in rows])
+    out = []
+    for lb, ln in rows:
+        # A listener goes with its load balancer: it carries the LB's tags unless it sets its own.
+        tags = {t["Key"]: t for t in lb_tags.get(lb["LoadBalancerArn"], [])}
+        tags.update({t["Key"]: t for t in own.get(ln["ListenerArn"], [])})
+        out.append({"Identifier": ln["ListenerArn"], "Properties": {
+            "Name": f"{lb.get('LoadBalancerName')}:{ln.get('Port')}", "Tags": list(tags.values())}})
     return out
 
 
@@ -640,6 +679,8 @@ NATIVE_LISTERS: dict[str, Callable[[Any, str], list[dict[str, Any]]]] = {
         "list_origin_request_policies", "OriginRequestPolicyList", "OriginRequestPolicy"),
     "AWS::CloudFront::ResponseHeadersPolicy": _cloudfront_policies(
         "list_response_headers_policies", "ResponseHeadersPolicyList", "ResponseHeadersPolicy"),
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": _load_balancers,
+    "AWS::ElasticLoadBalancingV2::TargetGroup": _target_groups,
     "AWS::ElasticLoadBalancingV2::Listener": _lb_listeners,
     "AWS::EKS::Addon": _eks_children("addon"),
     "AWS::EKS::FargateProfile": _eks_children("fargate"),

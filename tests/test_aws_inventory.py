@@ -111,6 +111,64 @@ def test_global_types_are_listed_once():
     assert {q.region for q in queues} == {"us-east-1", "eu-west-1"}
 
 
+def _elbv2():
+    arn = "arn:aws:elasticloadbalancing:us-east-1:111111111111:{}"
+    lbs = [{"LoadBalancerArn": arn.format(f"loadbalancer/app/k8s-app-{i}/abc{i}"), "LoadBalancerName": f"k8s-app-{i}"}
+           for i in range(25)]
+    k8s = [{"Key": "elbv2.k8s.aws/cluster", "Value": "prod"}]
+    calls = []
+
+    def describe_tags(region, ResourceArns):
+        calls.append(len(ResourceArns))
+        assert len(ResourceArns) <= 20
+        return {"TagDescriptions": [
+            {"ResourceArn": a, "Tags": [{"Key": "Port", "Value": "443"}] if "listener" in a
+             else k8s if a.endswith("abc0") or "targetgroup" in a else []}
+            for a in ResourceArns]}
+
+    data = {
+        ("elbv2", "describe_load_balancers"): {"LoadBalancers": lbs},
+        ("elbv2", "describe_target_groups"): {"TargetGroups": [
+            {"TargetGroupArn": arn.format("targetgroup/k8s-tg/1"), "TargetGroupName": "k8s-tg"}]},
+        ("elbv2", "describe_listeners"): lambda region, LoadBalancerArn: {"Listeners": [
+            {"ListenerArn": LoadBalancerArn.replace(":loadbalancer/", ":listener/") + "/l1", "Port": 443}]
+            if LoadBalancerArn.endswith("abc0") else []},
+        ("elbv2", "describe_tags"): describe_tags,
+    }
+    return data, calls
+
+
+def test_elbv2_resources_carry_tags_for_ignore_rules():
+    data, calls = _elbv2()
+    types = ["AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup",
+             "AWS::ElasticLoadBalancingV2::Listener"]
+    result = inv.list_inventory(FakeSession(data), ["us-east-1"], types, workers=1, log=lambda *a, **k: None)
+    by_name = {r.name: r for r in result.resources}
+    assert len([r for r in result.resources if r.tf_type == "aws_lb"]) == 25
+    assert by_name["k8s-app-0"].arn.endswith("abc0") and by_name["k8s-app-1"].props["Tags"] == []
+    assert inv._tag_map(by_name["k8s-app-0"].props["Tags"]) == {"elbv2.k8s.aws/cluster": "prod"}
+    assert inv._tag_map(by_name["k8s-tg"].props["Tags"]) == {"elbv2.k8s.aws/cluster": "prod"}
+    # The listener keeps its own tags and inherits its load balancer's.
+    assert inv._tag_map(by_name["k8s-app-0:443"].props["Tags"]) == {"elbv2.k8s.aws/cluster": "prod", "Port": "443"}
+    assert max(calls) == 20
+
+
+def test_controller_tag_rule_ignores_elbv2_findings(tmp_path, monkeypatch, capsys):
+    data, _ = _elbv2()
+    data.update({("sts", "get_caller_identity"): {"Account": "111111111111"}})
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(data))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".driftignore").write_text("tag:elbv2.k8s.aws/cluster\n")
+    out = tmp_path / "r.json"
+    code = dr.main(["unmanaged", "--region", "us-east-1", "--no-cloudformation", "--type", "aws_lb",
+                    "-f", "json", "-o", str(out)])
+    assert code == 0
+    report = json.loads(out.read_text())
+    # Only the untagged load balancers are left; the tagged one, its listener and the target group are ignored.
+    assert {f["address"] for f in report["findings"]} == {f"k8s-app-{i}" for i in range(1, 25)}
+    assert {i["address"] for i in report["ignored"]} == {"k8s-app-0", "k8s-tg", "k8s-app-0:443"}
+
+
 # --- matching --------------------------------------------------------------
 
 def _live(tf_type, identifier, region="us-east-1", cc_type="", **props):
