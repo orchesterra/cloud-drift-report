@@ -1,8 +1,9 @@
 # cloud-drift-report
 
-A read-only drift report for your cloud infrastructure. It finds resources that someone changed or deleted
-outside your Terraform, OpenTofu or CloudFormation code, and resources that exist in your account but no state
-file or stack knows about. It ranks them by severity and explains each one in plain English.
+Open-source Terraform drift detection, and a maintained alternative to driftctl. It finds resources that
+someone changed or deleted outside your Terraform, OpenTofu or CloudFormation code, and resources that exist in
+your account but no state file or stack knows about. It only reads, ranks findings by severity and explains
+each one in plain English.
 
 | | AWS | Azure, GCP, OCI |
 |---|---|---|
