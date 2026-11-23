@@ -1080,7 +1080,7 @@ def idle_cost(res: LiveResource, prices: Prices | None = None) -> tuple[str, flo
     if res.tf_type == "aws_nat_gateway" and p.get("Routed") and (moved := p.get("BytesLast14Days")) is not None \
             and moved < QUIET_BYTES:
         monthly, split, live = _nat_monthly(p, region, prices)
-        why = (f"a route table points at it, but it moved only {_size(moved)} in the last {QUIET_DAYS} days; "
+        why = (f"a route table points at it, but it moved {f'only {_size(moved)}' if moved else 'nothing'} in the last {QUIET_DAYS} days; "
                f"a NAT gateway that quiet still bills about ${monthly:.2f}/month")
         return why + split + _price_note(region, live), monthly
     if res.tf_type == "aws_eip" and p.get("Attached") is False and not p.get("ServiceManaged"):
