@@ -419,6 +419,7 @@ def _nat_gateways(s, r):
     return [{"Identifier": g["NatGatewayId"],
              "Properties": {"VpcId": g.get("VpcId"), "SubnetId": g.get("SubnetId"),
                             "ConnectivityType": g.get("ConnectivityType"), "Routed": g["NatGatewayId"] in routed,
+                            "PublicIps": sum(1 for a in g.get("NatGatewayAddresses") or [] if a.get("PublicIp")),
                             "Tags": g.get("Tags") or []}}
             for g in _paginate(ec2, "describe_nat_gateways", "NatGateways",
                                Filter=[{"Name": "state", "Values": ["pending", "available"]}])]
@@ -951,8 +952,13 @@ def idle_reason(res: LiveResource) -> str:
     """Why this resource looks idle while it still costs money, or ""."""
     p = res.props
     if res.tf_type == "aws_nat_gateway" and p.get("Routed") is False:
-        return ("no route table in this account sends traffic to it; an idle NAT gateway still bills "
-                "about $32/month")
+        why = "no route table in this account sends traffic to it; an idle NAT gateway still bills about "
+        ips = p.get("PublicIps") or 0
+        if not ips:
+            return why + "$32/month"
+        # Each public IPv4 address on it is billed too ($0.005/hour since February 2024).
+        plural = "es" if ips > 1 else ""
+        return why + f"${32 + 3.6 * ips:.2f}/month ($32 for the gateway, ${3.6 * ips:.2f} for {ips} public IPv4 address{plural})"
     if res.tf_type == "aws_eip" and p.get("Attached") is False and not p.get("ServiceManaged"):
         return "attached to nothing; an Elastic IP still bills about $3.60/month"
     return ""

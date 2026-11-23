@@ -5,6 +5,10 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Fixed
+- An idle public NAT gateway's cost now includes the public IPv4 charge ($3.60/month per address), so a
+  NAT gateway with one Elastic IP shows about $35.60/month instead of $32.
+
 ## [0.6.0] - 2026-11-23
 
 ### Added

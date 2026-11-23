@@ -471,7 +471,8 @@ IDLE_AWS = {
         {"DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": "nat-used"}]}]},
     ("ec2", "describe_nat_gateways"): lambda region, Filter, **kw: {"NatGateways": [
         {"NatGatewayId": "nat-used", "VpcId": "vpc-app", "SubnetId": "subnet-a"},
-        {"NatGatewayId": "nat-idle", "VpcId": "vpc-app", "SubnetId": "subnet-b"},
+        {"NatGatewayId": "nat-idle", "VpcId": "vpc-app", "SubnetId": "subnet-b",
+         "NatGatewayAddresses": [{"AllocationId": "eipalloc-nat", "PublicIp": "203.0.113.7"}]},
         {"NatGatewayId": "nat-idle-tf", "VpcId": "vpc-app", "SubnetId": "subnet-c"}]},
     ("ec2", "describe_addresses"): {"Addresses": [
         {"AllocationId": "eipalloc-used", "PublicIp": "3.3.3.3", "AssociationId": "eipassoc-1"},
@@ -488,14 +489,17 @@ IDLE_STATE = {"version": 4, "resources": [
 
 def test_nat_gateway_routed_and_eip_attached():
     s = FakeSession(IDLE_AWS)
-    nats = {r["Identifier"]: r["Properties"]["Routed"] for r in inv._nat_gateways(s, "us-east-1")}
-    assert nats == {"nat-used": True, "nat-idle": False, "nat-idle-tf": False}
+    listed = {r["Identifier"]: r["Properties"] for r in inv._nat_gateways(s, "us-east-1")}
+    assert {k: v["Routed"] for k, v in listed.items()} == {"nat-used": True, "nat-idle": False, "nat-idle-tf": False}
+    assert listed["nat-idle"]["PublicIps"] == 1 and listed["nat-used"]["PublicIps"] == 0
     eips = {r["Identifier"]: r["Properties"]["Attached"] for r in inv._elastic_ips(s, "us-east-1")}
     assert eips == {"eipalloc-used": True, "eipalloc-spare": False, "eipalloc-alb": False}
 
 
 def test_idle_reason():
-    assert "$32/month" in inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=False))
+    assert "$32/month" in inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=False))  # private NAT
+    public = inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=False, PublicIps=2))
+    assert "$39.20/month ($32 for the gateway, $7.20 for 2 public IPv4 addresses)" in public
     assert inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=True)) == ""
     assert inv.idle_reason(_live("aws_nat_gateway", "nat-1")) == ""  # listed without route data: say nothing
     assert "$3.60/month" in inv.idle_reason(_live("aws_eip", "eipalloc-1", Attached=False))

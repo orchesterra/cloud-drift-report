@@ -55,8 +55,8 @@ the same per resource type. If one cloud resource sits at two Terraform addresse
 warns and names both, because two applies would fight over it.
 
 The scan also flags what costs money while doing nothing: a NAT gateway that no route table sends traffic to
-(about $32 a month idle) and an Elastic IP attached to nothing (about $3.60 a month). One that is also not in
-IaC is reported at high severity with the cost in its explanation; ones your Terraform does manage are named
+(about $32 a month idle, plus $3.60 for each public IPv4 address on it) and an Elastic IP attached to nothing
+(about $3.60 a month). One that is also not in IaC is reported at high severity with the cost in its explanation; ones your Terraform does manage are named
 in the coverage line ("Idle and still billing: ...") and in the JSON's `idle` list, since being in code
 doesn't make them free.
 
