@@ -283,3 +283,100 @@ def test_markdown_and_html_wording():
     assert "<h1>Not in IaC: 111 (us-east-1)</h1>" in page and "resource not in IaC" in page
     empty = dr.render_markdown(dr.Report([], "aws", "x"))
     assert "Everything listed is in IaC." in empty
+
+
+# --- assuming a role -------------------------------------------------------
+
+class FakeSts:
+    def __init__(self, calls, fail=False):
+        self.calls, self.fail = calls, fail
+
+    def assume_role(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.fail:
+            raise RuntimeError("AccessDenied: not authorized to perform sts:AssumeRole")
+        import datetime
+        expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+        return {"Credentials": {"AccessKeyId": "ASIAROLE", "SecretAccessKey": "s", "SessionToken": "t",
+                                "Expiration": expires}}
+
+
+class FakeCaller:
+    """Stands in for a boto3 session: the caller's own credentials and an STS client."""
+
+    region_name = "eu-west-1"
+
+    def __init__(self, fail=False):
+        from botocore.credentials import Credentials
+        self.calls = []
+        self._creds = Credentials("AKIAOWN", "secret")
+        self._session = self
+        self.fail = fail
+
+    def get_credentials(self):
+        return self._creds
+
+    def create_client(self, service, *args, **kwargs):
+        assert service == "sts"
+        return FakeSts(self.calls, self.fail)
+
+
+def test_assume_role_uses_external_id_and_keeps_region():
+    caller = FakeCaller()
+    session = dr.assume_role(caller, "arn:aws:iam::222222222222:role/drift-read", "ext-123", "ci-run")
+    assert caller.calls == [{"RoleArn": "arn:aws:iam::222222222222:role/drift-read", "RoleSessionName": "ci-run",
+                             "ExternalId": "ext-123"}]
+    assert session.get_credentials().get_frozen_credentials().access_key == "ASIAROLE"
+    assert session.region_name == "eu-west-1"
+
+
+def test_assume_role_failure_is_clear():
+    import pytest
+    with pytest.raises(RuntimeError, match="Could not assume arn:aws:iam::222222222222:role/x"):
+        dr.assume_role(FakeCaller(fail=True), "arn:aws:iam::222222222222:role/x")
+
+
+def test_state_is_read_as_yourself_first_then_as_the_role():
+    base, role, tried = object(), object(), []
+
+    def read(src, session):
+        tried.append(session)
+        if session is base:
+            raise RuntimeError("AccessDenied")
+        return [("s3://b/k.tfstate", {})]
+
+    assert dr.read_state("s3://b/k.tfstate", base, role, read) == [("s3://b/k.tfstate", {})]
+    assert tried == [base, role]
+    tried.clear()
+    dr.read_state("./local.tfstate", base, role, lambda src, session: tried.append(session))
+    assert tried == [role]  # local files and directories don't use AWS credentials for the read
+
+
+def test_state_read_error_names_both_attempts():
+    import pytest
+
+    def read(src, session):
+        raise RuntimeError("denied " + session)
+
+    with pytest.raises(RuntimeError, match=r"your own credentials \(denied own\).*assumed role \(denied role\)"):
+        dr.read_state("s3://b/", "own", "role", read)
+
+
+def test_cli_scans_the_assumed_account(tmp_path, monkeypatch):
+    own = FakeSession(AWS)
+    target = FakeSession({**AWS, ("sts", "get_caller_identity"): {"Account": "222222222222"}})
+    seen = {}
+
+    def fake_assume(session, role_arn, external_id, session_name):
+        seen.update(base=session, role=role_arn, ext=external_id, name=session_name)
+        return target
+
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: own)
+    monkeypatch.setattr(dr, "assume_role", fake_assume)
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    out = tmp_path / "r.json"
+    dr.main(["unmanaged", "--region", "us-east-1", "--role-arn", "arn:aws:iam::222222222222:role/drift-read",
+             "--external-id", "ext-1", "-f", "json", "-o", str(out)])
+    assert seen == {"base": own, "role": "arn:aws:iam::222222222222:role/drift-read", "ext": "ext-1",
+                    "name": "cloud-drift-report"}
+    assert json.loads(out.read_text())["target"] == "222222222222 (us-east-1)"

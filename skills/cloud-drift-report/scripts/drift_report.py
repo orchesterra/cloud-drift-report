@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
@@ -432,14 +432,10 @@ def run_cloudformation(cfn, stacks: list[str] | None, region: str = "", timeout:
     return findings, statuses
 
 
-def cfn_client(profile: str | None, region: str | None):
-    try:
-        import boto3
-    except ImportError as exc:
-        raise RuntimeError("CloudFormation mode needs boto3: pip install boto3") from exc
-    session = boto3.Session(profile_name=profile, region_name=region)
-    if not session.region_name:
-        raise RuntimeError("No AWS region set. Pass --region or set AWS_REGION / a profile region.")
+def cfn_client(profile: str | None, region: str | None, args=None):
+    session = aws_session(profile, region)
+    if args is not None and getattr(args, "role_arn", None):
+        session = assume_role(session, args.role_arn, args.external_id, args.role_session_name)
     return session.client("cloudformation"), session.region_name
 
 
@@ -757,6 +753,13 @@ def share_report(json_paths: list[str]) -> None:
               f"{IMPORT_URL}. Nothing was uploaded.", file=sys.stderr)
 
 
+def add_role_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--role-arn", help="assume this IAM role first, to check another account (read-only role)")
+    parser.add_argument("--external-id", help="external ID the role's trust policy asks for")
+    parser.add_argument("--role-session-name", default="cloud-drift-report",
+                        help="session name in the target account's CloudTrail (default cloud-drift-report)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="cloud-drift-report",
@@ -792,6 +795,7 @@ def build_parser() -> argparse.ArgumentParser:
     cf.add_argument("--stack", "-s", action="append", default=[], help="stack name; may repeat (default: all stacks)")
     cf.add_argument("--region", "-r", help="AWS region (default: profile/env region)")
     cf.add_argument("--profile", "-p", help="AWS profile (default: env/default credentials)")
+    add_role_args(cf)
     cf.add_argument("--timeout", type=float, default=600, help="seconds to wait per stack (default 600)")
 
     un = sub.add_parser("unmanaged", aliases=["scan"], parents=[common],
@@ -804,6 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
     un.add_argument("--region", "-r", action="append", default=[], help="region to scan; may repeat (default: profile region)")
     un.add_argument("--all-regions", action="store_true", help="scan every enabled region")
     un.add_argument("--profile", "-p", help="AWS profile (default: env/default credentials)")
+    add_role_args(un)
     un.add_argument("--type", "-t", action="append", default=[],
                     help="only these types (Terraform or CloudFormation name, substring match); may repeat")
     un.add_argument("--workers", type=int, default=4, help="parallel list calls (default 4)")
@@ -821,15 +826,54 @@ def aws_session(profile: str | None, region: str | None):
     return session
 
 
+def assume_role(session, role_arn: str, external_id: str | None = None, session_name: str | None = None):
+    """A session acting as `role_arn`. Its credentials renew themselves, so a long scan never expires."""
+    import boto3
+    import botocore.session
+    from botocore.credentials import AssumeRoleCredentialFetcher, DeferredRefreshableCredentials
+
+    source = session.get_credentials()
+    if source is None:
+        raise RuntimeError(f"No AWS credentials to assume {role_arn} with. Set a profile or AWS_* variables.")
+    extra = {"RoleSessionName": session_name or "cloud-drift-report"}
+    if external_id:
+        extra["ExternalId"] = external_id
+    fetcher = AssumeRoleCredentialFetcher(client_creator=session._session.create_client, source_credentials=source,
+                                          role_arn=role_arn, extra_args=extra)
+    credentials = DeferredRefreshableCredentials(method="assume-role", refresh_using=fetcher.fetch_credentials)
+    try:
+        credentials.get_frozen_credentials()  # fail now, with a clear message, rather than mid-scan
+    except Exception as exc:
+        raise RuntimeError(f"Could not assume {role_arn}: {exc}") from exc
+    core = botocore.session.Session()
+    core._credentials = credentials
+    return boto3.Session(botocore_session=core, region_name=session.region_name)
+
+
+def read_state(src: str, base, session, read):
+    """State often lives in a central account: read it as yourself first, then as the assumed role."""
+    if session is base or not src.startswith("s3://"):
+        return read(src, session=session)
+    try:
+        return read(src, session=base)
+    except Exception as own:
+        try:
+            return read(src, session=session)
+        except Exception as assumed:
+            raise RuntimeError(f"Could not read {src} with your own credentials ({own}) "
+                               f"or with the assumed role ({assumed}).") from assumed
+
+
 def run_unmanaged(args, log=print) -> Report:
     import aws_inventory as inv_mod
 
-    session = aws_session(args.profile, args.region[0] if args.region else None)
+    base = aws_session(args.profile, args.region[0] if args.region else None)
+    session = assume_role(base, args.role_arn, args.external_id, args.role_session_name) if args.role_arn else base
     regions = inv_mod.enabled_regions(session) if args.all_regions else (args.region or [session.region_name])
     iac: list = []
     sources: list[str] = []
     for src in args.state:
-        docs = inv_mod.read_state_source(src, session=session)
+        docs = read_state(src, base, session, inv_mod.read_state_source)
         count = 0
         for label, doc in docs:
             entries = inv_mod.parse_state(doc, label)
@@ -896,7 +940,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.mode in ("unmanaged", "scan"):
             report = run_unmanaged(args)
         else:
-            cfn, region = cfn_client(args.profile, args.region)
+            cfn, region = cfn_client(args.profile, args.region, args)
             findings, statuses = run_cloudformation(cfn, args.stack, region, args.timeout)
             if not statuses:
                 print(f"No stacks found in {region}.", file=sys.stderr)
