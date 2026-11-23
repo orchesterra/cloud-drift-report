@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
@@ -528,12 +528,20 @@ def _md_cell(s: str) -> str:
 
 
 def coverage_line(cov: dict[str, Any]) -> str:
-    parts = [f"{cov.get('listed', 0)} resources listed", f"{cov.get('in_iac', 0)} in IaC",
-             f"{cov.get('not_in_iac', 0)} not in IaC", f"{cov.get('aws_owned_skipped', 0)} AWS-owned skipped"]
+    pct = cov.get("percent_in_iac")
+    parts = ([f"{pct:g}% in IaC"] if pct is not None else []) + [
+        f"{cov.get('listed', 0)} resources listed", f"{cov.get('in_iac', 0)} in IaC",
+        f"{cov.get('not_in_iac', 0)} not in IaC", f"{cov.get('aws_owned_skipped', 0)} AWS-owned skipped"]
     if cov.get("types_not_listed"):
         parts.append(f"{cov['types_not_listed']} type/region pairs could not be listed (see JSON output)")
     sources = cov.get("iac_sources") or []
-    return "Coverage: " + " · ".join(parts) + (f". Compared with: {', '.join(sources)}." if sources else ".")
+    line = "Coverage: " + " · ".join(parts) + (f". Compared with: {', '.join(sources)}." if sources else ".")
+    dups = cov.get("duplicate_imports") or []
+    if dups:
+        line += (f" Warning: {len(dups)} resource{'s are' if len(dups) != 1 else ' is'} in state at more than one "
+                 f"address (" + "; ".join(f"{d['type']} {d['id']}" for d in dups[:5]) + (", ..." if len(dups) > 5 else "")
+                 + "); see the JSON output.")
+    return line
 
 
 def render_markdown(r: Report) -> str:
@@ -809,6 +817,10 @@ def build_parser() -> argparse.ArgumentParser:
     un.add_argument("--all-regions", action="store_true", help="scan every enabled region")
     un.add_argument("--profile", "-p", help="AWS profile (default: env/default credentials)")
     add_role_args(un)
+    un.add_argument("--strict", action="store_true",
+                    help="also report resources AWS created itself (default VPCs, service-linked roles, ...)")
+    un.add_argument("--explain", metavar="TEXT",
+                    help="say why resources whose id, name or ARN contains TEXT did or didn't match IaC")
     un.add_argument("--type", "-t", action="append", default=[],
                     help="only these types (Terraform or CloudFormation name, substring match); may repeat")
     un.add_argument("--workers", type=int, default=4, help="parallel list calls (default 4)")
@@ -898,19 +910,41 @@ def run_unmanaged(args, log=print) -> Report:
         if not cc_types:
             raise RuntimeError(f"No supported type matches {', '.join(args.type)}.")
     inventory = inv_mod.list_inventory(session, regions, cc_types, workers=args.workers, log=log)
+    owned = {id(res): why for res, why in inventory.owned}
+    if args.strict:  # report what AWS created too, so nothing is skipped silently
+        inventory.resources += [res for res, _ in inventory.owned]
+    for line in (inv_mod.explain(inventory, iac, args.explain) if args.explain else []):
+        log(line, file=sys.stderr)
     result = inv_mod.match(inventory, iac)
-    findings = [finalize(Finding(
-        source="aws", location=res.region or "global", address=res.name or res.identifier, type=res.tf_type,
-        action=UNMANAGED, physical_id=res.arn or res.identifier, tags=inv_mod._tag_map(res.props.get("Tags"))))
-        for res in result.unmanaged]
+    findings = []
+    for res in result.unmanaged:
+        f = finalize(Finding(
+            source="aws", location=res.region or "global", address=res.name or res.identifier, type=res.tf_type,
+            action=UNMANAGED, physical_id=res.arn or res.identifier, tags=inv_mod._tag_map(res.props.get("Tags"))))
+        if id(res) in owned:
+            f.severity = "low"
+            f.explanation = f"AWS created this ({owned[id(res)]}); shown because of --strict."
+        findings.append(f)
+    duplicates = inv_mod.duplicate_imports(iac)
+    for d in duplicates:
+        log(f"warning: {d['type']} {d['id']} is in state at {len(d['addresses'])} addresses: "
+            f"{'; '.join(d['addresses'])}", file=sys.stderr)
     try:
         account = session.client("sts").get_caller_identity()["Account"]
     except Exception:
         account = "AWS account"
+    by_type: dict[str, dict[str, int]] = {}
+    for res, _ in result.managed:
+        by_type.setdefault(res.tf_type, {"in_iac": 0, "not_in_iac": 0})["in_iac"] += 1
+    for res in result.unmanaged:
+        by_type.setdefault(res.tf_type, {"in_iac": 0, "not_in_iac": 0})["not_in_iac"] += 1
+    listed = len(inventory.resources)
     coverage = {
-        "listed": len(inventory.resources), "in_iac": len(result.managed), "not_in_iac": len(result.unmanaged),
-        "aws_owned_skipped": len(inventory.owned), "types_not_listed": len(inventory.not_listed),
+        "listed": listed, "in_iac": len(result.managed), "not_in_iac": len(result.unmanaged),
+        "percent_in_iac": round(100 * len(result.managed) / listed, 1) if listed else None,
+        "aws_owned_skipped": 0 if args.strict else len(inventory.owned), "types_not_listed": len(inventory.not_listed),
         "regions": regions, "iac_sources": sources, "not_listed": inventory.not_listed or None,
+        "by_type": dict(sorted(by_type.items())) or None, "duplicate_imports": duplicates or None,
     }
     return Report(findings, "aws", f"{account} ({', '.join(regions)})", coverage=coverage)
 

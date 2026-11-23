@@ -380,3 +380,84 @@ def test_cli_scans_the_assumed_account(tmp_path, monkeypatch):
     assert seen == {"base": own, "role": "arn:aws:iam::222222222222:role/drift-read", "ext": "ext-1",
                     "name": "cloud-drift-report"}
     assert json.loads(out.read_text())["target"] == "222222222222 (us-east-1)"
+
+
+# --- Organizations / Control Tower, --strict, coverage, duplicates, --explain ----
+
+def test_organizations_and_control_tower_defaults_are_aws_owned():
+    owned = [
+        _live("aws_iam_role", "OrganizationAccountAccessRole", RoleName="OrganizationAccountAccessRole", Path="/"),
+        _live("aws_iam_role", "AWSControlTowerExecution", RoleName="AWSControlTowerExecution", Path="/"),
+        _live("aws_iam_role", "aws-controltower-ConfigRecorderRole", RoleName="aws-controltower-ConfigRecorderRole"),
+        _live("aws_iam_role", "stacksets-exec-1a2b3c", RoleName="stacksets-exec-1a2b3c", Path="/"),
+        _live("aws_iam_role", "AWSCloudFormationStackSetExecutionRole", RoleName="AWSCloudFormationStackSetExecutionRole"),
+        _live("aws_cloudwatch_log_group", "aws-controltower/CloudTrailLogs", LogGroupName="aws-controltower/CloudTrailLogs"),
+    ]
+    for res in owned:
+        assert inv.aws_owned_reason(res), res
+    assert not inv.aws_owned_reason(_live("aws_iam_role", "OrgAdmin", RoleName="OrgAdmin", Path="/"))
+
+
+def test_duplicate_imports_name_both_addresses():
+    state = {"resources": [
+        {"mode": "managed", "type": "aws_s3_bucket", "name": "logs", "instances": [{"attributes": {"id": "acme-logs"}}]},
+        {"mode": "managed", "module": "module.audit", "type": "aws_s3_bucket", "name": "trail",
+         "instances": [{"index_key": "a", "attributes": {"id": "acme-logs"}}]},
+        {"mode": "managed", "type": "aws_s3_bucket", "name": "other", "instances": [{"attributes": {"id": "acme-other"}}]},
+    ]}
+    dups = inv.duplicate_imports(inv.parse_state(state, "prod.tfstate"))
+    assert dups == [{"type": "aws_s3_bucket", "id": "acme-logs",
+                     "addresses": ["aws_s3_bucket.logs (prod.tfstate)", 'module.audit.aws_s3_bucket.trail["a"] (prod.tfstate)']}]
+
+
+def test_explain_says_why():
+    inventory = inv.list_inventory(FakeSession(AWS), ["us-east-1"], TYPES, log=lambda *a, **k: None)
+    iac = inv.parse_state(STATE, "prod.tfstate")
+    lines = inv.explain(inventory, iac, "jobs")
+    assert lines == ["aws_sqs_queue jobs (us-east-1): in IaC, matched aws_sqs_queue.jobs in prod.tfstate."]
+    lines = inv.explain(inventory, iac, "clickops")
+    assert lines[0].startswith("aws_sqs_queue clickops (us-east-1): NOT in IaC. Looked for any of: ")
+    assert lines[1] == "  1 aws_sqs_queue entries compared; none has these values."
+    assert inv.explain(inventory, iac, "deploy")[1] == "  No aws_iam_role or AWS::IAM::Role entries in the state files or stacks compared."
+    assert inv.explain(inventory, iac, "vpc-default") == [
+        "aws_vpc vpc-default (us-east-1): skipped as AWS-owned (default VPC resource); --strict reports it."]
+    assert inv.explain(inventory, iac, "nothing-like-this")[0].startswith("nothing-like-this: not among the 7 listed")
+
+
+def test_explain_points_at_another_region():
+    state = {"resources": [{"mode": "managed", "type": "aws_cloudwatch_log_group", "name": "api", "instances": [
+        {"attributes": {"id": "/app/api", "name": "/app/api", "arn": "arn:aws:logs:eu-west-1:1:log-group:/app/api"}}]}]}
+    here = _live("aws_cloudwatch_log_group", "/app/api", "us-east-1")
+    lines = inv.explain(inv.Inventory(resources=[here]), inv.parse_state(state, "s"), "/app/api")
+    assert lines[1] == "  Close: aws_cloudwatch_log_group.api in s (recorded for region eu-west-1)."
+
+
+def test_cli_strict_coverage_and_explain(tmp_path, monkeypatch, capsys):
+    state_file = tmp_path / "prod.tfstate"
+    state_file.write_text(json.dumps(STATE))
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(AWS))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    out = tmp_path / "r.json"
+    dr.main(["unmanaged", "--region", "us-east-1", "--state", str(state_file), "-f", "json", "-o", str(out),
+             "--explain", "clickops"])
+    cov = json.loads(out.read_text())["coverage"]
+    assert cov["percent_in_iac"] == 60.0 and cov["by_type"]["aws_sqs_queue"] == {"in_iac": 1, "not_in_iac": 1}
+    err = capsys.readouterr().err
+    assert "aws_sqs_queue clickops (us-east-1): NOT in IaC" in err
+    assert "Coverage: 60% in IaC" in dr.coverage_line(cov)
+
+    dr.main(["unmanaged", "--region", "us-east-1", "--state", str(state_file), "-f", "json", "-o", str(out), "--strict"])
+    doc = json.loads(out.read_text())
+    strict = {f["address"]: f for f in doc["findings"]}
+    assert set(strict) == {"deploy", "clickops", "vpc-default", "AWSServiceRoleForECS"}
+    assert strict["vpc-default"]["severity"] == "low"
+    assert strict["vpc-default"]["explanation"] == "AWS created this (default VPC resource); shown because of --strict."
+    assert doc["coverage"]["aws_owned_skipped"] == 0
+
+
+def test_coverage_line_warns_about_duplicates():
+    line = dr.coverage_line({"listed": 2, "in_iac": 1, "not_in_iac": 1, "percent_in_iac": 50.0,
+                             "duplicate_imports": [{"type": "aws_s3_bucket", "id": "acme-logs", "addresses": ["a", "b"]}]})
+    assert line.startswith("Coverage: 50% in IaC · 2 resources listed")
+    assert line.endswith("Warning: 1 resource is in state at more than one address (aws_s3_bucket acme-logs); "
+                         "see the JSON output.")

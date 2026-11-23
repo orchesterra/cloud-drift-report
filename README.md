@@ -42,10 +42,21 @@ attribute (before → after), a severity, and a short "what probably happened". 
 get its name, region, type, ID or ARN and a severity.
 
 The not-in-IaC scan skips what AWS creates itself: default VPCs and their subnets, route tables and security
-groups, service-linked roles, AWS-managed keys and policies, and resources another AWS service owns (an EKS
-cluster security group, an RDS-managed secret, instances launched by an Auto Scaling group). They are counted
-in the report's coverage line but not listed as findings. Types it could not list (access denied, or the type
-needs a parent resource) are named in the JSON output, so you know what was not checked.
+groups, service-linked roles, AWS-managed keys and policies, resources another AWS service owns (an EKS
+cluster security group, an RDS-managed secret, instances launched by an Auto Scaling group), and what AWS
+Organizations, Control Tower and StackSets put in member accounts (`OrganizationAccountAccessRole`,
+`AWSControlTower*` and `aws-controltower-*`, `stacksets-exec-*`). They are counted in the report's coverage line
+but not listed as findings; `--strict` lists them too, as low severity with the reason. Types it could not list
+(access denied, or the type needs a parent resource) are named in the JSON output, so you know what was not
+checked.
+
+The coverage line starts with the share of listed resources that are in IaC ("87% in IaC"), and the JSON has
+the same per resource type. If one cloud resource sits at two Terraform addresses (imported twice), the scan
+warns and names both, because two applies would fight over it.
+
+When a resource you expect to be in IaC is reported anyway, `--explain TEXT` says, for each listed resource
+whose ID, name or ARN contains TEXT, what it matched or why it didn't: no state entry of that type, an entry
+recorded for another region, or the values it looked for.
 
 **Severity**
 
