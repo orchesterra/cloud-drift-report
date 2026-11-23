@@ -15,6 +15,7 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ### Changed
 - The README and package summary say "open-source Terraform drift detection".
+- The Cursor plugin manifest lists the Cursor rule, so marketplaces show it next to the skill.
 
 ## [0.3.2] - 2026-11-23
 
