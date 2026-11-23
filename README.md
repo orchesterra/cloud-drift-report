@@ -55,10 +55,12 @@ the same per resource type. If one cloud resource sits at two Terraform addresse
 warns and names both, because two applies would fight over it.
 
 The scan also flags what costs money while doing nothing: a NAT gateway that no route table sends traffic to
-(about $32 a month idle, plus $3.60 for each public IPv4 address on it) and an Elastic IP attached to nothing
-(about $3.60 a month). One that is also not in IaC is reported at high severity with the cost in its explanation; ones your Terraform does manage are named
-in the coverage line ("Idle and still billing: ...") and in the JSON's `idle` list, since being in code
-doesn't make them free.
+(about $33 a month idle in us-east-1, plus $3.65 for each public IPv4 address on it) and an Elastic IP
+attached to nothing (about $3.65 a month). Costs use that region's on-demand rates from the AWS Price List API
+(`pricing:GetProducts`); if it can't be read, the us-east-1 list price is used and the finding says so. One
+that is also not in IaC is reported at high severity with the cost in its explanation; ones your Terraform
+does manage are named in the coverage line ("Idle and still billing: ...") and in the JSON's `idle` list,
+since being in code doesn't make them free.
 
 When a resource you expect to be in IaC is reported anyway, `--explain TEXT` says, for each listed resource
 whose ID, name or ARN contains TEXT, what it matched or why it didn't: no state entry of that type, an entry
@@ -329,7 +331,8 @@ Regenerate them with `python3 examples/generate.py`.
   and `ListStacks`. Drift detection records a check on the stack; nothing else changes.
 - Not in IaC: only List, Describe and Get calls (Cloud Control `ListResources`, plus a few service list calls
   such as `ec2:DescribeVpcs` and `iam:ListRoles`), `cloudformation:ListStackResources`, and reads of the state
-  files you name. State files are read in memory and never printed or saved.
+  files you name. When something idle is found, `pricing:GetProducts` reads its region's price. State files
+  are read in memory and never printed or saved.
 - Uses your own credentials (see [Credentials](#credentials)). The AWS managed `ReadOnlyAccess` policy is enough, plus
   `cloudformation:DetectStackDrift` for CloudFormation drift and whatever read permissions your Terraform
   provider needs to refresh.

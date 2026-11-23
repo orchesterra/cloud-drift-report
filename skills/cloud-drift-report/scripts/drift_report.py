@@ -922,7 +922,8 @@ def run_unmanaged(args, log=print) -> Report:
         log(line, file=sys.stderr)
     result = inv_mod.match(inventory, iac)
     unmanaged = {id(res) for res in result.unmanaged}
-    idle = {id(res): why for res in inventory.resources if (why := inv_mod.idle_reason(res))}
+    prices = inv_mod.Prices(session, log=log)
+    idle = {id(res): found for res in inventory.resources if (found := inv_mod.idle_cost(res, prices))}
     findings = []
     for res in result.unmanaged:
         f = finalize(Finding(
@@ -933,7 +934,7 @@ def run_unmanaged(args, log=print) -> Report:
             f.explanation = f"AWS created this ({owned[id(res)]}); shown because of --strict."
         elif id(res) in idle:  # costs money for nothing, and nobody's code owns it
             f.severity = "high"
-            f.explanation = f"Not in IaC and idle: {idle[id(res)]}."
+            f.explanation = f"Not in IaC and idle: {idle[id(res)][0]}."
         findings.append(f)
     duplicates = inv_mod.duplicate_imports(iac)
     for d in duplicates:
@@ -956,7 +957,8 @@ def run_unmanaged(args, log=print) -> Report:
         "regions": regions, "iac_sources": sources, "not_listed": inventory.not_listed or None,
         "by_type": dict(sorted(by_type.items())) or None, "duplicate_imports": duplicates or None,
         "idle": [{"type": res.tf_type, "id": res.identifier, "region": res.region, "in_iac": id(res) not in unmanaged,
-                  "reason": idle[id(res)]} for res in inventory.resources if id(res) in idle] or None,
+                  "reason": idle[id(res)][0], "monthly_usd": round(idle[id(res)][1], 2)}
+                 for res in inventory.resources if id(res) in idle] or None,
     }
     return Report(findings, "aws", f"{account} ({', '.join(regions)})", coverage=coverage)
 

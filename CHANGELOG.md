@@ -5,6 +5,13 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Changed
+- Idle costs use live on-demand prices for the resource's region from the AWS Price List API
+  (`pricing:GetProducts`, included in `ReadOnlyAccess`), e.g. about $41 a month for an idle NAT gateway in
+  ap-south-1 instead of a flat $32. If prices can't be read, us-east-1 list prices are used and the finding
+  says so. Monthly figures use 730 hours, so us-east-1 now shows $32.85 and $3.65 rather than $32 and $3.60.
+- The JSON's `idle` entries have a `monthly_usd` number.
+
 ## [0.6.1] - 2026-11-23
 
 ### Fixed

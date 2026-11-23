@@ -946,22 +946,97 @@ def _short_reason(text: str) -> str:
 
 
 # --- idle and still billing ------------------------------------------------
-# Rough on-demand prices (us-east-1, 2026); the point is that they bill while doing nothing.
+# Hourly on-demand rates come from the AWS Price List API for the resource's region. When that can't be
+# read (no pricing:GetProducts, no network), the us-east-1 list prices below are used and the text says so.
 
-def idle_reason(res: LiveResource) -> str:
-    """Why this resource looks idle while it still costs money, or ""."""
-    p = res.props
+HOURS_PER_MONTH = 730
+_US_EAST_1_HOURLY = {"nat": 0.045, "ipv4_in_use": 0.005, "ipv4_idle": 0.005}
+_PRICE_QUERIES = {  # kind -> (service code, usage type without its region prefix, extra filters)
+    "nat": ("AmazonEC2", "NatGateway-Hours", {"productFamily": "NAT Gateway", "operation": "NatGateway"}),
+    "ipv4_in_use": ("AmazonVPC", "PublicIPv4:InUseAddress", {"group": "VPCPublicIPv4Address"}),
+    "ipv4_idle": ("AmazonVPC", "PublicIPv4:IdleAddress", {"group": "VPCPublicIPv4Address"}),
+}
+
+
+def _usage_matches(usagetype: str, base: str) -> bool:
+    """"NatGateway-Hours" matches itself and "EU-NatGateway-Hours", not "RegionalNatGateway-Hours"."""
+    return usagetype == base or usagetype.partition("-")[2] == base
+
+
+class Prices:
+    """Hourly list prices per region, read from the Price List API the first time an idle resource needs one."""
+
+    def __init__(self, session: Any = None, log: Callable[..., None] = print):
+        self._session, self._log = session, log
+        self._client: Any = None
+        self._cache: dict[tuple[str, str], float | None] = {}
+        self.failed = session is None
+
+    def _read(self, kind: str, region: str) -> float | None:
+        service, usage, extra = _PRICE_QUERIES[kind]
+        if self._client is None:
+            try:
+                from botocore.config import Config
+                config = Config(connect_timeout=3, read_timeout=6, retries={"max_attempts": 2})
+            except ImportError:  # fake sessions in tests
+                config = None
+            # The Price List API only has endpoints in us-east-1 (and two others); prices cover every region.
+            kwargs = {"config": config} if config else {}
+            self._client = self._session.client("pricing", region_name="us-east-1", **kwargs)
+        filters = [{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}]
+        filters += [{"Type": "TERM_MATCH", "Field": k, "Value": v} for k, v in extra.items()]
+        for raw in self._client.get_products(ServiceCode=service, Filters=filters, MaxResults=100).get("PriceList", []):
+            product = json.loads(raw) if isinstance(raw, str) else raw
+            if not _usage_matches(str(product.get("product", {}).get("attributes", {}).get("usagetype", "")), usage):
+                continue
+            for term in product.get("terms", {}).get("OnDemand", {}).values():
+                for dim in term.get("priceDimensions", {}).values():
+                    usd = float(dim.get("pricePerUnit", {}).get("USD") or 0)
+                    if usd > 0:
+                        return usd
+        return None
+
+    def hourly(self, kind: str, region: str) -> tuple[float, bool]:
+        """(rate, True) from the Price List API, or (us-east-1 rate, False) when it couldn't be read."""
+        if not self.failed and (kind, region) not in self._cache:
+            try:
+                self._cache[(kind, region)] = self._read(kind, region)
+            except Exception as exc:  # stop asking after the first failure: it would fail the same way
+                self.failed = True
+                self._log(f"note: could not read AWS prices ({_short_reason(str(exc))}); idle costs use us-east-1 list prices. "
+                          "Live prices need pricing:GetProducts (in ReadOnlyAccess).", file=sys.stderr)
+        rate = self._cache.get((kind, region))
+        return (rate, True) if rate else (_US_EAST_1_HOURLY[kind], False)
+
+
+def idle_cost(res: LiveResource, prices: Prices | None = None) -> tuple[str, float] | None:
+    """(why it looks idle while it still costs money, monthly USD), or None."""
+    p, prices = res.props, prices or Prices()
+    region = res.region or "us-east-1"
     if res.tf_type == "aws_nat_gateway" and p.get("Routed") is False:
-        why = "no route table in this account sends traffic to it; an idle NAT gateway still bills about "
-        ips = p.get("PublicIps") or 0
-        if not ips:
-            return why + "$32/month"
-        # Each public IPv4 address on it is billed too ($0.005/hour since February 2024).
-        plural = "es" if ips > 1 else ""
-        return why + f"${32 + 3.6 * ips:.2f}/month ($32 for the gateway, ${3.6 * ips:.2f} for {ips} public IPv4 address{plural})"
+        nat, live = prices.hourly("nat", region)
+        ips = int(p.get("PublicIps") or 0)
+        ip, ip_live = prices.hourly("ipv4_in_use", region) if ips else (0.0, live)
+        gateway, addresses = nat * HOURS_PER_MONTH, ip * HOURS_PER_MONTH * ips
+        why = f"no route table in this account sends traffic to it; an idle NAT gateway still bills about ${gateway + addresses:.2f}/month"
+        if ips:  # each public IPv4 address on it is billed too (since February 2024)
+            why += f" (${gateway:.2f} for the gateway, ${addresses:.2f} for {ips} public IPv4 address{'es' if ips > 1 else ''})"
+        return why + _price_note(region, live and ip_live), gateway + addresses
     if res.tf_type == "aws_eip" and p.get("Attached") is False and not p.get("ServiceManaged"):
-        return "attached to nothing; an Elastic IP still bills about $3.60/month"
-    return ""
+        ip, live = prices.hourly("ipv4_idle", region)
+        monthly = ip * HOURS_PER_MONTH
+        return f"attached to nothing; an Elastic IP still bills about ${monthly:.2f}/month" + _price_note(region, live), monthly
+    return None
+
+
+def _price_note(region: str, live: bool) -> str:
+    return f" in {region}" if live else f" (us-east-1 list price used where the live {region} price could not be read)"
+
+
+def idle_reason(res: LiveResource, prices: Prices | None = None) -> str:
+    """Why this resource looks idle while it still costs money, or ""."""
+    found = idle_cost(res, prices)
+    return found[0] if found else ""
 
 
 # --- what IaC knows about --------------------------------------------------

@@ -496,20 +496,61 @@ def test_nat_gateway_routed_and_eip_attached():
     assert eips == {"eipalloc-used": True, "eipalloc-spare": False, "eipalloc-alb": False}
 
 
+def _price(usagetype, usd):
+    return json.dumps({"product": {"attributes": {"usagetype": usagetype}},
+                       "terms": {"OnDemand": {"t": {"priceDimensions": {"d": {"pricePerUnit": {"USD": usd}}}}}}})
+
+
+def _get_products(region, ServiceCode, Filters, **kwargs):
+    where = {f["Field"]: f["Value"] for f in Filters}
+    assert region == "us-east-1"  # the pricing endpoint, whatever region is priced
+    prefix = {"eu-west-1": "EU-", "us-east-1": ""}[where["regionCode"]]
+    if ServiceCode == "AmazonEC2":
+        assert where["operation"] == "NatGateway"
+        return {"PriceList": [_price(prefix + "NatGateway-Bytes", "0.048"), _price("RegionalNatGateway-Hours", "9"),
+                              _price(prefix + "NatGateway-Hours", "0.048")]}
+    return {"PriceList": [_price(prefix + "PublicIPv4:InUseAddress", "0.005"),
+                          _price(prefix + "PublicIPv4:IdleAddress", "0.006")]}
+
+
+PRICING = {("pricing", "get_products"): _get_products}
+
+
+def test_idle_cost_uses_live_regional_prices():
+    prices = inv.Prices(FakeSession(PRICING))
+    nat = _live("aws_nat_gateway", "nat-1", Routed=False, PublicIps=2)
+    nat.region = "eu-west-1"
+    why, monthly = inv.idle_cost(nat, prices)
+    assert why.endswith("about $42.34/month ($35.04 for the gateway, $7.30 for 2 public IPv4 addresses) in eu-west-1")
+    assert round(monthly, 2) == 42.34
+    eip = _live("aws_eip", "eipalloc-1", Attached=False)
+    eip.region = "eu-west-1"
+    assert inv.idle_reason(eip, prices) == "attached to nothing; an Elastic IP still bills about $4.38/month in eu-west-1"
+
+
+def test_idle_cost_falls_back_to_us_east_1_prices_once():
+    notes = []
+    denied = {("pricing", "get_products"): lambda region, **kw: (_ for _ in ()).throw(
+        RuntimeError("AccessDeniedException: not authorized to perform pricing:GetProducts"))}
+    prices = inv.Prices(FakeSession(denied), log=lambda *a, **k: notes.append(a[0]))
+    nat = inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=False, PublicIps=1), prices)
+    assert "about $36.50/month ($32.85 for the gateway, $3.65 for 1 public IPv4 address)" in nat
+    assert nat.endswith("(us-east-1 list price used where the live us-east-1 price could not be read)")
+    assert "$32.85/month" in inv.idle_reason(_live("aws_nat_gateway", "nat-2", Routed=False), prices)  # private NAT
+    assert len(notes) == 1 and "access denied" in notes[0]
+
+
 def test_idle_reason():
-    assert "$32/month" in inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=False))  # private NAT
-    public = inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=False, PublicIps=2))
-    assert "$39.20/month ($32 for the gateway, $7.20 for 2 public IPv4 addresses)" in public
     assert inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=True)) == ""
     assert inv.idle_reason(_live("aws_nat_gateway", "nat-1")) == ""  # listed without route data: say nothing
-    assert "$3.60/month" in inv.idle_reason(_live("aws_eip", "eipalloc-1", Attached=False))
+    assert "$3.65/month" in inv.idle_reason(_live("aws_eip", "eipalloc-1", Attached=False))
     assert inv.idle_reason(_live("aws_eip", "eipalloc-1", Attached=False, ServiceManaged="nlb")) == ""
 
 
 def test_cli_flags_idle_nat_and_eip_in_and_out_of_iac(tmp_path, monkeypatch):
     state_file = tmp_path / "net.tfstate"
     state_file.write_text(json.dumps(IDLE_STATE))
-    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession({**AWS, **IDLE_AWS}))
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession({**AWS, **IDLE_AWS, **PRICING}))
     monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t]
                                                            for t in ("AWS::EC2::NatGateway", "AWS::EC2::EIP")})
     out = tmp_path / "r.json"
@@ -523,5 +564,7 @@ def test_cli_flags_idle_nat_and_eip_in_and_out_of_iac(tmp_path, monkeypatch):
     assert found["eipalloc-alb"]["severity"] == "medium"
     idle = {(i["id"], i["in_iac"]) for i in doc["coverage"]["idle"]}
     assert idle == {("nat-idle", False), ("nat-idle-tf", True), ("eipalloc-spare", False)}
+    costs = {i["id"]: i["monthly_usd"] for i in doc["coverage"]["idle"]}
+    assert costs == {"nat-idle": 38.69, "nat-idle-tf": 35.04, "eipalloc-spare": 4.38}
     line = dr.coverage_line(doc["coverage"])
     assert "Idle and still billing: " in line and "aws_nat_gateway nat-idle-tf (in IaC)" in line
