@@ -56,7 +56,10 @@ warns and names both, because two applies would fight over it.
 
 The scan also flags what costs money while doing nothing: a NAT gateway that no route table sends traffic to
 (about $33 a month idle in us-east-1, plus $3.65 for each public IPv4 address on it) and an Elastic IP
-attached to nothing (about $3.65 a month). Costs use that region's on-demand rates from the AWS Price List API
+attached to nothing (about $3.65 a month). A NAT gateway that routes do point at, but that moved under
+1 GB in the last 14 days (CloudWatch `BytesOutToDestination` plus `BytesInFromDestination`), is flagged as
+nearly unused, at medium severity since it may be a standby; gateways younger than 14 days aren't judged.
+Costs use that region's on-demand rates from the AWS Price List API
 (`pricing:GetProducts`); if it can't be read, the us-east-1 list price is used and the finding says so. One
 that is also not in IaC is reported at high severity with the cost in its explanation; ones your Terraform
 does manage are named in the coverage line ("Idle and still billing: ...") and in the JSON's `idle` list,
@@ -331,7 +334,8 @@ Regenerate them with `python3 examples/generate.py`.
   and `ListStacks`. Drift detection records a check on the stack; nothing else changes.
 - Not in IaC: only List, Describe and Get calls (Cloud Control `ListResources`, plus a few service list calls
   such as `ec2:DescribeVpcs` and `iam:ListRoles`), `cloudformation:ListStackResources`, and reads of the state
-  files you name. When something idle is found, `pricing:GetProducts` reads its region's price. State files
+  files you name. When something idle is found, `pricing:GetProducts` reads its region's price.
+  `cloudwatch:GetMetricData` reads routed NAT gateways' traffic. State files
   are read in memory and never printed or saved.
 - Uses your own credentials (see [Credentials](#credentials)). The AWS managed `ReadOnlyAccess` policy is enough, plus
   `cloudformation:DetectStackDrift` for CloudFormation drift and whatever read permissions your Terraform

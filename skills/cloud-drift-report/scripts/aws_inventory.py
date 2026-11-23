@@ -416,13 +416,54 @@ def _nat_gateways(s, r):
     ec2 = s.client("ec2", region_name=r)
     routed = {route.get("NatGatewayId") for t in _paginate(ec2, "describe_route_tables", "RouteTables")
               for route in t.get("Routes") or []}
-    return [{"Identifier": g["NatGatewayId"],
-             "Properties": {"VpcId": g.get("VpcId"), "SubnetId": g.get("SubnetId"),
-                            "ConnectivityType": g.get("ConnectivityType"), "Routed": g["NatGatewayId"] in routed,
-                            "PublicIps": sum(1 for a in g.get("NatGatewayAddresses") or [] if a.get("PublicIp")),
-                            "Tags": g.get("Tags") or []}}
-            for g in _paginate(ec2, "describe_nat_gateways", "NatGateways",
-                               Filter=[{"Name": "state", "Values": ["pending", "available"]}])]
+    gateways = _paginate(ec2, "describe_nat_gateways", "NatGateways",
+                         Filter=[{"Name": "state", "Values": ["pending", "available"]}])
+    traffic = _nat_traffic(s, r, [g for g in gateways if g["NatGatewayId"] in routed])
+    out = []
+    for g in gateways:
+        props = {"VpcId": g.get("VpcId"), "SubnetId": g.get("SubnetId"),
+                 "ConnectivityType": g.get("ConnectivityType"), "Routed": g["NatGatewayId"] in routed,
+                 "PublicIps": sum(1 for a in g.get("NatGatewayAddresses") or [] if a.get("PublicIp")),
+                 "Tags": g.get("Tags") or []}
+        if g["NatGatewayId"] in traffic:
+            props["BytesLast14Days"] = traffic[g["NatGatewayId"]]
+        out.append({"Identifier": g["NatGatewayId"], "Properties": props})
+    return out
+
+
+QUIET_DAYS = 14
+QUIET_BYTES = 1_000_000_000  # under 1 GB to and from the destination in 14 days: next to nothing goes through it
+_NAT_BYTES = ("BytesOutToDestination", "BytesInFromDestination")
+
+
+def _nat_traffic(s, r, gateways) -> dict[str, float]:
+    """Bytes each gateway moved over the last QUIET_DAYS days, for gateways at least that old.
+    Empty when CloudWatch can't be read (cloudwatch:GetMetricData is in ReadOnlyAccess)."""
+    from datetime import datetime, timedelta, timezone
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=QUIET_DAYS)
+    old = [g["NatGatewayId"] for g in gateways if g.get("CreateTime") and g["CreateTime"] <= start]
+    if not old:
+        return {}
+    queries = [{"Id": f"q{i}_{j}", "ReturnData": True, "MetricStat": {
+        "Metric": {"Namespace": "AWS/NATGateway", "MetricName": metric,
+                   "Dimensions": [{"Name": "NatGatewayId", "Value": nat}]},
+        "Period": 86400, "Stat": "Sum"}} for i, nat in enumerate(old) for j, metric in enumerate(_NAT_BYTES)]
+    totals = dict.fromkeys(old, 0.0)
+    try:
+        cw = s.client("cloudwatch", region_name=r)
+        for k in range(0, len(queries), 500):  # GetMetricData takes at most 500 queries
+            kwargs: dict[str, Any] = {"MetricDataQueries": queries[k:k + 500], "StartTime": start, "EndTime": end}
+            while True:
+                page = cw.get_metric_data(**kwargs)
+                for row in page.get("MetricDataResults") or []:
+                    totals[old[int(row["Id"][1:].split("_")[0])]] += sum(row.get("Values") or [])
+                if not page.get("NextToken"):
+                    break
+                kwargs["NextToken"] = page["NextToken"]
+    except Exception:  # no permission or no CloudWatch: say nothing rather than guess
+        return {}
+    return totals
 
 
 def _elastic_ips(s, r):
@@ -1009,19 +1050,39 @@ class Prices:
         return (rate, True) if rate else (_US_EAST_1_HOURLY[kind], False)
 
 
+def _nat_monthly(p: dict, region: str, prices: Prices) -> tuple[float, str, bool]:
+    """(monthly USD, the gateway/address split or "", whether every price was live) for a NAT gateway."""
+    nat, live = prices.hourly("nat", region)
+    ips = int(p.get("PublicIps") or 0)
+    ip, ip_live = prices.hourly("ipv4_in_use", region) if ips else (0.0, live)
+    gateway, addresses = nat * HOURS_PER_MONTH, ip * HOURS_PER_MONTH * ips
+    split = ""
+    if ips:  # each public IPv4 address on it is billed too (since February 2024)
+        split = f" (${gateway:.2f} for the gateway, ${addresses:.2f} for {ips} public IPv4 address{'es' if ips > 1 else ''})"
+    return gateway + addresses, split, live and ip_live
+
+
+def _size(n: float) -> str:
+    for unit, scale in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= scale:
+            return f"{n / scale:.1f} {unit}"
+    return f"{int(n)} bytes"
+
+
 def idle_cost(res: LiveResource, prices: Prices | None = None) -> tuple[str, float] | None:
     """(why it looks idle while it still costs money, monthly USD), or None."""
     p, prices = res.props, prices or Prices()
     region = res.region or "us-east-1"
     if res.tf_type == "aws_nat_gateway" and p.get("Routed") is False:
-        nat, live = prices.hourly("nat", region)
-        ips = int(p.get("PublicIps") or 0)
-        ip, ip_live = prices.hourly("ipv4_in_use", region) if ips else (0.0, live)
-        gateway, addresses = nat * HOURS_PER_MONTH, ip * HOURS_PER_MONTH * ips
-        why = f"no route table in this account sends traffic to it; an idle NAT gateway still bills about ${gateway + addresses:.2f}/month"
-        if ips:  # each public IPv4 address on it is billed too (since February 2024)
-            why += f" (${gateway:.2f} for the gateway, ${addresses:.2f} for {ips} public IPv4 address{'es' if ips > 1 else ''})"
-        return why + _price_note(region, live and ip_live), gateway + addresses
+        monthly, split, live = _nat_monthly(p, region, prices)
+        why = f"no route table in this account sends traffic to it; an idle NAT gateway still bills about ${monthly:.2f}/month"
+        return why + split + _price_note(region, live), monthly
+    if res.tf_type == "aws_nat_gateway" and p.get("Routed") and (moved := p.get("BytesLast14Days")) is not None \
+            and moved < QUIET_BYTES:
+        monthly, split, live = _nat_monthly(p, region, prices)
+        why = (f"a route table points at it, but it moved only {_size(moved)} in the last {QUIET_DAYS} days; "
+               f"a NAT gateway that quiet still bills about ${monthly:.2f}/month")
+        return why + split + _price_note(region, live), monthly
     if res.tf_type == "aws_eip" and p.get("Attached") is False and not p.get("ServiceManaged"):
         ip, live = prices.hourly("ipv4_idle", region)
         monthly = ip * HOURS_PER_MONTH

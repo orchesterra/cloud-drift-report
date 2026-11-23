@@ -568,3 +568,61 @@ def test_cli_flags_idle_nat_and_eip_in_and_out_of_iac(tmp_path, monkeypatch):
     assert costs == {"nat-idle": 38.69, "nat-idle-tf": 35.04, "eipalloc-spare": 4.38}
     line = dr.coverage_line(doc["coverage"])
     assert "Idle and still billing: " in line and "aws_nat_gateway nat-idle-tf (in IaC)" in line
+
+
+def _quiet_aws(calls):
+    from datetime import datetime, timedelta, timezone
+    old, new = datetime.now(timezone.utc) - timedelta(days=60), datetime.now(timezone.utc) - timedelta(days=2)
+    traffic = {"nat-quiet": [1e6, 2e6], "nat-busy": [4e9, 3e9]}
+
+    def get_metric_data(region, MetricDataQueries, StartTime, EndTime, **kw):
+        calls.append([q["MetricStat"]["Metric"]["Dimensions"][0]["Value"] for q in MetricDataQueries])
+        assert (EndTime - StartTime).days == inv.QUIET_DAYS
+        return {"MetricDataResults": [
+            {"Id": q["Id"], "Values": traffic[q["MetricStat"]["Metric"]["Dimensions"][0]["Value"]]}
+            for q in MetricDataQueries]}
+
+    return {
+        ("ec2", "describe_route_tables"): {"RouteTables": [{"RouteTableId": "rtb-1", "Routes": [
+            {"DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": nat} for nat in ("nat-quiet", "nat-busy", "nat-new")]}]},
+        ("ec2", "describe_nat_gateways"): lambda region, Filter, **kw: {"NatGateways": [
+            {"NatGatewayId": "nat-quiet", "CreateTime": old,
+             "NatGatewayAddresses": [{"AllocationId": "eipalloc-q", "PublicIp": "203.0.113.9"}]},
+            {"NatGatewayId": "nat-busy", "CreateTime": old},
+            {"NatGatewayId": "nat-new", "CreateTime": new},
+            {"NatGatewayId": "nat-unrouted", "CreateTime": old}]},
+        ("cloudwatch", "get_metric_data"): get_metric_data,
+    }
+
+
+def test_routed_nat_with_almost_no_traffic_is_quiet():
+    calls = []
+    listed = {r["Identifier"]: r["Properties"] for r in inv._nat_gateways(FakeSession(_quiet_aws(calls)), "us-east-1")}
+    # Only routed gateways at least 14 days old are looked up; one call for all of them.
+    assert calls == [["nat-quiet", "nat-quiet", "nat-busy", "nat-busy"]]
+    assert listed["nat-quiet"]["BytesLast14Days"] == 6e6 and listed["nat-busy"]["BytesLast14Days"] == 14e9
+    assert "BytesLast14Days" not in listed["nat-new"] and "BytesLast14Days" not in listed["nat-unrouted"]
+    quiet = inv.idle_reason(_live("aws_nat_gateway", "nat-quiet", **listed["nat-quiet"]))
+    assert quiet.startswith("a route table points at it, but it moved only 6.0 MB in the last 14 days; "
+                            "a NAT gateway that quiet still bills about $36.50/month")
+    assert inv.idle_reason(_live("aws_nat_gateway", "nat-busy", **listed["nat-busy"])) == ""
+    assert inv.idle_reason(_live("aws_nat_gateway", "nat-new", **listed["nat-new"])) == ""
+
+
+def test_nat_traffic_unreadable_says_nothing():
+    data = _quiet_aws([])
+    data[("cloudwatch", "get_metric_data")] = _denied
+    listed = {r["Identifier"]: r["Properties"] for r in inv._nat_gateways(FakeSession(data), "us-east-1")}
+    assert all("BytesLast14Days" not in p for p in listed.values())
+
+
+def test_cli_reports_quiet_nat_as_medium(tmp_path, monkeypatch):
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession({**AWS, **_quiet_aws([]), **PRICING}))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {"AWS::EC2::NatGateway": "aws_nat_gateway"})
+    out = tmp_path / "r.json"
+    dr.main(["unmanaged", "--region", "us-east-1", "--no-cloudformation", "-f", "json", "-o", str(out)])
+    found = {f["address"]: f for f in json.loads(out.read_text())["findings"]}
+    assert found["nat-quiet"]["severity"] == "medium"
+    assert found["nat-quiet"]["explanation"].startswith("Not in IaC and nearly unused: a route table points at it")
+    assert found["nat-unrouted"]["severity"] == "high"
+    assert not found["nat-busy"]["explanation"].startswith("Not in IaC and")  # an ordinary unmanaged gateway
