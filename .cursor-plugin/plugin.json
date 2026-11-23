@@ -25,5 +25,6 @@
     "security",
     "devops"
   ],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "rules": "./cursor/rules/"
 }
