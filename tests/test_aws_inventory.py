@@ -461,3 +461,63 @@ def test_coverage_line_warns_about_duplicates():
     assert line.startswith("Coverage: 50% in IaC · 2 resources listed")
     assert line.endswith("Warning: 1 resource is in state at more than one address (aws_s3_bucket acme-logs); "
                          "see the JSON output.")
+
+
+# --- idle and still billing ------------------------------------------------
+
+IDLE_AWS = {
+    ("ec2", "describe_route_tables"): {"RouteTables": [{"RouteTableId": "rtb-1", "Routes": [
+        {"DestinationCidrBlock": "10.0.0.0/16", "GatewayId": "local"},
+        {"DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": "nat-used"}]}]},
+    ("ec2", "describe_nat_gateways"): lambda region, Filter, **kw: {"NatGateways": [
+        {"NatGatewayId": "nat-used", "VpcId": "vpc-app", "SubnetId": "subnet-a"},
+        {"NatGatewayId": "nat-idle", "VpcId": "vpc-app", "SubnetId": "subnet-b"},
+        {"NatGatewayId": "nat-idle-tf", "VpcId": "vpc-app", "SubnetId": "subnet-c"}]},
+    ("ec2", "describe_addresses"): {"Addresses": [
+        {"AllocationId": "eipalloc-used", "PublicIp": "3.3.3.3", "AssociationId": "eipassoc-1"},
+        {"AllocationId": "eipalloc-spare", "PublicIp": "4.4.4.4"},
+        {"AllocationId": "eipalloc-alb", "PublicIp": "5.5.5.5", "ServiceManaged": "alb"}]},
+}
+
+IDLE_STATE = {"version": 4, "resources": [
+    {"mode": "managed", "type": "aws_nat_gateway", "name": "main", "instances": [{"attributes": {"id": "nat-idle-tf"}}]},
+    {"mode": "managed", "type": "aws_nat_gateway", "name": "used", "instances": [{"attributes": {"id": "nat-used"}}]},
+    {"mode": "managed", "type": "aws_eip", "name": "used", "instances": [{"attributes": {"id": "eipalloc-used"}}]},
+]}
+
+
+def test_nat_gateway_routed_and_eip_attached():
+    s = FakeSession(IDLE_AWS)
+    nats = {r["Identifier"]: r["Properties"]["Routed"] for r in inv._nat_gateways(s, "us-east-1")}
+    assert nats == {"nat-used": True, "nat-idle": False, "nat-idle-tf": False}
+    eips = {r["Identifier"]: r["Properties"]["Attached"] for r in inv._elastic_ips(s, "us-east-1")}
+    assert eips == {"eipalloc-used": True, "eipalloc-spare": False, "eipalloc-alb": False}
+
+
+def test_idle_reason():
+    assert "$32/month" in inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=False))
+    assert inv.idle_reason(_live("aws_nat_gateway", "nat-1", Routed=True)) == ""
+    assert inv.idle_reason(_live("aws_nat_gateway", "nat-1")) == ""  # listed without route data: say nothing
+    assert "$3.60/month" in inv.idle_reason(_live("aws_eip", "eipalloc-1", Attached=False))
+    assert inv.idle_reason(_live("aws_eip", "eipalloc-1", Attached=False, ServiceManaged="nlb")) == ""
+
+
+def test_cli_flags_idle_nat_and_eip_in_and_out_of_iac(tmp_path, monkeypatch):
+    state_file = tmp_path / "net.tfstate"
+    state_file.write_text(json.dumps(IDLE_STATE))
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession({**AWS, **IDLE_AWS}))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t]
+                                                           for t in ("AWS::EC2::NatGateway", "AWS::EC2::EIP")})
+    out = tmp_path / "r.json"
+    dr.main(["unmanaged", "--region", "us-east-1", "--state", str(state_file), "-f", "json", "-o", str(out)])
+    doc = json.loads(out.read_text())
+    found = {f["address"]: f for f in doc["findings"]}
+    assert set(found) == {"nat-idle", "eipalloc-spare", "eipalloc-alb"}
+    assert found["nat-idle"]["severity"] == "high"
+    assert found["nat-idle"]["explanation"].startswith("Not in IaC and idle: no route table")
+    assert found["eipalloc-spare"]["severity"] == "high"
+    assert found["eipalloc-alb"]["severity"] == "medium"
+    idle = {(i["id"], i["in_iac"]) for i in doc["coverage"]["idle"]}
+    assert idle == {("nat-idle", False), ("nat-idle-tf", True), ("eipalloc-spare", False)}
+    line = dr.coverage_line(doc["coverage"])
+    assert "Idle and still billing: " in line and "aws_nat_gateway nat-idle-tf (in IaC)" in line
