@@ -5,6 +5,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-23
+
 ### Added
 - Idle and still billing: the scan flags NAT gateways no route table uses and Elastic IPs attached to nothing.
   Unmanaged ones are high severity with the monthly cost; managed ones are listed in the coverage line and
@@ -91,7 +93,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.1...v0.3.2
