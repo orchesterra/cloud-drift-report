@@ -131,6 +131,23 @@ variables or CLI login (`az login`, `gcloud auth application-default login`, `~/
 Prefer SSO or a role over long-lived access keys. The AWS managed `ReadOnlyAccess` policy covers everything
 the tool reads; see [Safety](#safety) for the exact calls.
 
+### Another account: `--role-arn`
+
+`cloudformation` and `unmanaged` can assume a role first, so one set of credentials checks any account that
+trusts it:
+
+```bash
+cloud-drift-report unmanaged --region us-east-1 \
+  --role-arn arn:aws:iam::222222222222:role/drift-report-readonly --external-id "$EXTERNAL_ID" \
+  --state s3://acme-tf-state/prod/
+```
+
+The role needs `ReadOnlyAccess` (or less; see [Safety](#safety)) and a trust policy for your caller.
+`--external-id` is optional; `--role-session-name` (default `cloud-drift-report`) is what the target
+account's CloudTrail shows. Credentials renew during long scans. An `s3://` state is read with your own
+credentials first, since state usually lives in a central account, and then as the role. Terraform/OpenTofu
+mode leaves roles to your provider configuration.
+
 ### In GitHub Actions
 
 Use the action. It posts the report on the run's summary page, keeps the HTML, Markdown and JSON reports as
@@ -159,6 +176,9 @@ jobs:
           mode: unmanaged
           args: --region us-east-1 --state s3://acme-tf-state/prod/
 ```
+
+To check several accounts from one CI role, add `--role-arn arn:aws:iam::<account>:role/drift-report-readonly`
+to `args`, one job per account (a matrix works well).
 
 Terraform/OpenTofu drift: add `hashicorp/setup-terraform` or `opentofu/setup-opentofu` and run `init`, then use
 `mode: terraform` with `args: --dir ./infra`. CloudFormation: `mode: cloudformation` with

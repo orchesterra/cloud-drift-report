@@ -28,6 +28,8 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
   Credentials come from the standard chain (SSO profile, assume-role profile, access keys, env vars, CI role).
   If a call fails with an expired SSO token, ask the user to run `aws sso login --profile <profile>`; never ask
   for or handle access keys yourself. In Terraform mode, `--profile` sets `AWS_PROFILE` for the AWS provider.
+  To check another account, `cloudformation` and `unmanaged` take `--role-arn <arn>` (plus `--external-id`
+  if the role's trust policy asks for one). Use a role the user names; never guess account IDs or ARNs.
 - Do not upload the report anywhere. `--share` only prints a link to OrchesTerra's import page and makes no network call; the user drops the JSON file there themselves if they want to.
 
 ## Steps

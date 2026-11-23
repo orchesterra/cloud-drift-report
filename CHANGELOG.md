@@ -5,6 +5,17 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-23
+
+### Added
+- `--role-arn`, `--external-id` and `--role-session-name` for `cloudformation` and `unmanaged`: assume a role
+  first and check another account with one set of credentials. Credentials renew during long scans. An
+  `s3://` state is read with your own credentials first (state usually lives in a central account), then as
+  the role.
+
+### Changed
+- The README and package summary say "open-source Terraform drift detection".
+
 ## [0.3.2] - 2026-11-23
 
 ### Fixed
@@ -59,7 +70,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.2.1...v0.3.0
