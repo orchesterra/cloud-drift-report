@@ -1,6 +1,6 @@
 {
   "name": "cloud-drift-report",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Read-only drift report: Terraform/OpenTofu and CloudFormation drift ranked by severity, plus AWS resources that no state file or stack covers.",
   "author": { "name": "OrchesTerra", "url": "https://www.orchesterra.in" },
   "homepage": "https://github.com/orchesterra/cloud-drift-report",

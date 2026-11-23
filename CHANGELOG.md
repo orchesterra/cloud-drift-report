@@ -5,6 +5,14 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-23
+
+### Fixed
+- `tag:` ignore rules now match load balancers, target groups and listeners in the not-in-IaC scan. AWS's
+  Cloud Control API lists them without tags, so a rule such as `tag:elbv2.k8s.aws/cluster` (the AWS Load
+  Balancer Controller's tag) used to miss them. A listener also carries its load balancer's tags.
+- Load balancers and target groups are shown by name instead of the last part of their ARN.
+
 ## [0.3.1] - 2026-11-22
 
 ### Added
@@ -51,7 +59,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.2.0...v0.2.1
