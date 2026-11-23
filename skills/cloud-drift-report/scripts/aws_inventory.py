@@ -751,6 +751,12 @@ def aws_owned_reason(res: LiveResource) -> str:
         return "requester-managed endpoint (created by an AWS service)"
     if t == "aws_iam_role" and str(p.get("Path") or "").startswith(("/aws-service-role/", "/aws-reserved/")):
         return "service-linked or AWS SSO role"
+    if t == "aws_iam_role" and n == "OrganizationAccountAccessRole":
+        return "created by AWS Organizations when the account joined"
+    if t == "aws_iam_role" and (n.startswith("stacksets-exec-") or n == "AWSCloudFormationStackSetExecutionRole"):
+        return "CloudFormation StackSets execution role"
+    if n.startswith(("AWSControlTower", "aws-controltower")) or ident.startswith("aws-controltower"):
+        return "created by AWS Control Tower"
     if t == "aws_iam_policy" and ":aws:policy/" in arn:
         return "AWS managed policy"
     if t == "aws_kms_key" and p.get("KeyManager") == "AWS":
@@ -926,6 +932,8 @@ class IacEntry:
     tokens: frozenset[str]
     region: str
     where: str            # state file or stack
+    address: str = ""     # Terraform address (module.x.aws_s3_bucket.logs["a"]), or the stack's logical id
+    ident: str = ""       # the state's `id` attribute
 
 
 def _state_tokens(attrs: dict[str, Any]) -> tuple[frozenset[str], str]:
@@ -955,11 +963,25 @@ def parse_state(doc: dict[str, Any], where: str) -> list[IacEntry]:
         if res.get("mode") != "managed":
             continue
         tf_type = TERRAFORM_TYPE_ALIASES.get(res.get("type", ""), res.get("type", ""))
+        base = ".".join(p for p in (res.get("module", ""), res.get("type", ""), res.get("name", "")) if p)
         for inst in res.get("instances") or []:
-            tokens, region = _state_tokens(inst.get("attributes") or {})
+            attrs = inst.get("attributes") or {}
+            tokens, region = _state_tokens(attrs)
             if tokens:
-                out.append(IacEntry(tf_type, "", tokens, region, where))
+                key = inst.get("index_key")
+                address = base + (f"[{json.dumps(key)}]" if key is not None else "")
+                out.append(IacEntry(tf_type, "", tokens, region, where, address, str(attrs.get("id") or "")))
     return out
+
+
+def duplicate_imports(iac: list[IacEntry]) -> list[dict[str, Any]]:
+    """One cloud resource at two or more Terraform addresses: two applies would fight over it."""
+    seen: dict[tuple[str, str, str], list[IacEntry]] = {}
+    for e in iac:
+        if e.tf_type and e.ident:
+            seen.setdefault((e.tf_type, e.ident, e.region), []).append(e)
+    return [{"type": t, "id": i, "addresses": [f"{e.address} ({e.where})" for e in entries]}
+            for (t, i, _), entries in sorted(seen.items()) if len(entries) > 1]
 
 
 def read_state_source(source: str, session: Any = None, binary: str | None = None,
@@ -1022,7 +1044,8 @@ def stack_entries(session: Any, region: str, log: Callable[..., None] = print) -
                 tokens.add(phys.rstrip("/").rsplit("/", 1)[-1])
             if "|" in phys:
                 tokens.update(p for p in phys.split("|") if p)
-            out.append(IacEntry("", row.get("ResourceType", ""), frozenset(tokens), region, f"stack {name} ({region})"))
+            out.append(IacEntry("", row.get("ResourceType", ""), frozenset(tokens), region, f"stack {name} ({region})",
+                                str(row.get("LogicalResourceId") or "")))
     return out
 
 
@@ -1062,6 +1085,43 @@ def _find(res: LiveResource, candidates: list[IacEntry]) -> IacEntry | None:
         if any(key <= entry.tokens for key in keys):
             return entry
     return None
+
+
+def explain(inventory: Inventory, iac: list[IacEntry], needle: str) -> list[str]:
+    """Why each listed resource whose id, name or ARN contains `needle` did or didn't match IaC."""
+    lines: list[str] = []
+    found = [(r, "") for r in inventory.resources] + list(inventory.owned)
+    hits = [(r, why) for r, why in found if any(needle in v for v in (r.identifier, r.name, r.arn) if v)]
+    if not hits:
+        lines.append(f"{needle}: not among the {len(found)} listed resources. Check --region/--type; "
+                     f"{len(inventory.not_listed)} type/region pairs could not be listed.")
+        return lines
+    for res, why in hits:
+        label = f"{res.tf_type} {res.name or res.identifier} ({res.region or 'global'})"
+        if why:
+            lines.append(f"{label}: skipped as AWS-owned ({why}); --strict reports it.")
+            continue
+        tf = TERRAFORM_TYPE_ALIASES.get(res.tf_type, res.tf_type)
+        same_type = [e for e in iac if e.tf_type == tf or (e.cc_type and e.cc_type == res.cc_type)]
+        hit = _find(res, same_type)
+        keys = sorted("+".join(sorted(k)) for k in res.keys())
+        if hit:
+            where = f"{hit.address} in {hit.where}" if hit.address else hit.where
+            lines.append(f"{label}: in IaC, matched {where}.")
+            continue
+        lines.append(f"{label}: NOT in IaC. Looked for any of: {', '.join(keys)}.")
+        if not same_type:
+            lines.append(f"  No {tf} or {res.cc_type} entries in the state files or stacks compared.")
+            continue
+        wanted = set().union(*res.keys()) if res.keys() else set()
+        near = [e for e in same_type if e.tokens & wanted]
+        for e in near[:5]:
+            why_not = (f"recorded for region {e.region}" if e.region and res.region and e.region != res.region
+                       else "shares only part of a composite id")
+            lines.append(f"  Close: {e.address or e.where} in {e.where} ({why_not}).")
+        if not near:
+            lines.append(f"  {len(same_type)} {tf} entries compared; none has these values.")
+    return lines
 
 
 def enabled_regions(session: Any) -> list[str]:

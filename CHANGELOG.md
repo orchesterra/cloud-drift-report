@@ -5,6 +5,21 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
+### Added
+- Coverage percentage: the coverage line starts with "N% in IaC", and the JSON has `percent_in_iac` and a
+  per-type breakdown (`by_type`).
+- `--explain TEXT` (not-in-IaC scan): for each listed resource whose ID, name or ARN contains TEXT, says what
+  it matched in IaC, or why it didn't (no entry of that type, an entry for another region, the values tried).
+- A warning when one cloud resource is at two or more Terraform addresses (imported twice), naming both.
+- `--strict` reports resources AWS created itself as low-severity findings, with the reason.
+
+### Changed
+- AWS Organizations, Control Tower and StackSets defaults in member accounts are skipped as AWS-owned:
+  `OrganizationAccountAccessRole`, `AWSControlTower*` / `aws-controltower-*` resources, `stacksets-exec-*` and
+  `AWSCloudFormationStackSetExecutionRole`.
+
 ## [0.4.0] - 2026-11-23
 
 ### Added
@@ -71,7 +86,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.3.0...v0.3.1
