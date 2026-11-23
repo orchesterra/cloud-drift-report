@@ -5,6 +5,11 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- Idle and still billing: the scan flags NAT gateways no route table uses and Elastic IPs attached to nothing.
+  Unmanaged ones are high severity with the monthly cost; managed ones are listed in the coverage line and
+  the JSON's `idle` list. NAT gateways and Elastic IPs are now listed with the EC2 API instead of Cloud Control.
+
 ## [0.5.0] - 2026-11-23
 
 ### Added

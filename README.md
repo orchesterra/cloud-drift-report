@@ -54,6 +54,12 @@ The coverage line starts with the share of listed resources that are in IaC ("87
 the same per resource type. If one cloud resource sits at two Terraform addresses (imported twice), the scan
 warns and names both, because two applies would fight over it.
 
+The scan also flags what costs money while doing nothing: a NAT gateway that no route table sends traffic to
+(about $32 a month idle) and an Elastic IP attached to nothing (about $3.60 a month). One that is also not in
+IaC is reported at high severity with the cost in its explanation; ones your Terraform does manage are named
+in the coverage line ("Idle and still billing: ...") and in the JSON's `idle` list, since being in code
+doesn't make them free.
+
 When a resource you expect to be in IaC is reported anyway, `--explain TEXT` says, for each listed resource
 whose ID, name or ARN contains TEXT, what it matched or why it didn't: no state entry of that type, an entry
 recorded for another region, or the values it looked for.

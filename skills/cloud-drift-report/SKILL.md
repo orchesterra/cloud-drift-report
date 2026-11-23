@@ -64,6 +64,8 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
      warning, since two applies would fight over that resource.
    - Read the coverage line: it lists type/region pairs that could not be listed (access denied, needs a
      parent). Mention them so the user knows what was not checked.
+   - If the coverage line says "Idle and still billing", name each one and its monthly cost: a NAT gateway no
+     route uses, or an Elastic IP attached to nothing. Ones marked "(in IaC)" are removed in code, not in AWS.
 5. Show the Markdown summary in chat: the counts by severity first, then the high rows.
    For a file to share, rerun with `--format html -o drift-report.html` (or `csv`, `json`).
 6. Explain the high-severity rows in plain words (who might now have access, what is exposed) and suggest the
@@ -74,7 +76,8 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
 ## Severity
 
 - **high**: security relevant: security groups and rules, NACLs, IAM, bucket policies, public access, ACLs,
-  encryption, KMS, resource policies.
+  encryption, KMS, resource policies. In a not-in-IaC scan, also an idle NAT gateway or Elastic IP that
+  still bills.
 - **medium**: any other change that alters behaviour, deleted resources, and most resources not in IaC.
 - **low**: tags only, and log groups an AWS service created for one of the user's resources.
 

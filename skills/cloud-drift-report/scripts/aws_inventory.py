@@ -412,6 +412,28 @@ def _route_tables(s, r):
             for t in _paginate(ec2, "describe_route_tables", "RouteTables")]
 
 
+def _nat_gateways(s, r):
+    ec2 = s.client("ec2", region_name=r)
+    routed = {route.get("NatGatewayId") for t in _paginate(ec2, "describe_route_tables", "RouteTables")
+              for route in t.get("Routes") or []}
+    return [{"Identifier": g["NatGatewayId"],
+             "Properties": {"VpcId": g.get("VpcId"), "SubnetId": g.get("SubnetId"),
+                            "ConnectivityType": g.get("ConnectivityType"), "Routed": g["NatGatewayId"] in routed,
+                            "Tags": g.get("Tags") or []}}
+            for g in _paginate(ec2, "describe_nat_gateways", "NatGateways",
+                               Filter=[{"Name": "state", "Values": ["pending", "available"]}])]
+
+
+def _elastic_ips(s, r):
+    ec2 = s.client("ec2", region_name=r)
+    page = ec2.describe_addresses(Filters=[{"Name": "domain", "Values": ["vpc"]}]) or {}
+    return [{"Identifier": a["AllocationId"],
+             "Properties": {"PublicIp": a.get("PublicIp"), "ServiceManaged": a.get("ServiceManaged"),
+                            "Attached": bool(a.get("AssociationId") or a.get("NetworkInterfaceId") or a.get("InstanceId")),
+                            "Tags": a.get("Tags") or []}}
+            for a in page.get("Addresses") or [] if a.get("AllocationId")]
+
+
 def _network_acls(s, r):
     ec2 = s.client("ec2", region_name=r)
     return [{"Identifier": a["NetworkAclId"], "Properties": {"IsDefault": a.get("IsDefault"), "Tags": a.get("Tags") or []}}
@@ -658,6 +680,8 @@ NATIVE_LISTERS: dict[str, Callable[[Any, str], list[dict[str, Any]]]] = {
     "AWS::EC2::DHCPOptions": _dhcp_options,
     "AWS::EC2::RouteTable": _route_tables,
     "AWS::EC2::NetworkAcl": _network_acls,
+    "AWS::EC2::NatGateway": _nat_gateways,
+    "AWS::EC2::EIP": _elastic_ips,
     "AWS::EC2::Instance": _instances,
     "AWS::EC2::Volume": _volumes,
     "AWS::EC2::VPCEndpoint": _vpc_endpoints,
@@ -918,6 +942,20 @@ def _short_reason(text: str) -> str:
         if marker in text:
             return label
     return text.splitlines()[0][:160]
+
+
+# --- idle and still billing ------------------------------------------------
+# Rough on-demand prices (us-east-1, 2026); the point is that they bill while doing nothing.
+
+def idle_reason(res: LiveResource) -> str:
+    """Why this resource looks idle while it still costs money, or ""."""
+    p = res.props
+    if res.tf_type == "aws_nat_gateway" and p.get("Routed") is False:
+        return ("no route table in this account sends traffic to it; an idle NAT gateway still bills "
+                "about $32/month")
+    if res.tf_type == "aws_eip" and p.get("Attached") is False and not p.get("ServiceManaged"):
+        return "attached to nothing; an Elastic IP still bills about $3.60/month"
+    return ""
 
 
 # --- what IaC knows about --------------------------------------------------

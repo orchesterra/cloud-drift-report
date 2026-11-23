@@ -88,7 +88,7 @@ def _is_security_path(path: str) -> bool:
 
 
 def classify_severity(rtype: str, action: str, paths: list[str]) -> str:
-    """high = security relevant, low = tags only, medium = anything else."""
+    """high = security relevant, low = tags only, medium = anything else (scans also raise idle, billing ones)."""
     if _is_security_type(rtype):
         return "high"
     if any(_is_security_path(p) and not _is_tag_path(p) for p in paths):
@@ -541,6 +541,11 @@ def coverage_line(cov: dict[str, Any]) -> str:
         line += (f" Warning: {len(dups)} resource{'s are' if len(dups) != 1 else ' is'} in state at more than one "
                  f"address (" + "; ".join(f"{d['type']} {d['id']}" for d in dups[:5]) + (", ..." if len(dups) > 5 else "")
                  + "); see the JSON output.")
+    idle = cov.get("idle") or []
+    if idle:
+        line += (" Idle and still billing: " + "; ".join(
+            f"{i['type']} {i['id']}{' (in IaC)' if i['in_iac'] else ''}" for i in idle[:5])
+                 + (", ..." if len(idle) > 5 else "") + "; see the JSON output.")
     return line
 
 
@@ -916,6 +921,8 @@ def run_unmanaged(args, log=print) -> Report:
     for line in (inv_mod.explain(inventory, iac, args.explain) if args.explain else []):
         log(line, file=sys.stderr)
     result = inv_mod.match(inventory, iac)
+    unmanaged = {id(res) for res in result.unmanaged}
+    idle = {id(res): why for res in inventory.resources if (why := inv_mod.idle_reason(res))}
     findings = []
     for res in result.unmanaged:
         f = finalize(Finding(
@@ -924,6 +931,9 @@ def run_unmanaged(args, log=print) -> Report:
         if id(res) in owned:
             f.severity = "low"
             f.explanation = f"AWS created this ({owned[id(res)]}); shown because of --strict."
+        elif id(res) in idle:  # costs money for nothing, and nobody's code owns it
+            f.severity = "high"
+            f.explanation = f"Not in IaC and idle: {idle[id(res)]}."
         findings.append(f)
     duplicates = inv_mod.duplicate_imports(iac)
     for d in duplicates:
@@ -945,6 +955,8 @@ def run_unmanaged(args, log=print) -> Report:
         "aws_owned_skipped": 0 if args.strict else len(inventory.owned), "types_not_listed": len(inventory.not_listed),
         "regions": regions, "iac_sources": sources, "not_listed": inventory.not_listed or None,
         "by_type": dict(sorted(by_type.items())) or None, "duplicate_imports": duplicates or None,
+        "idle": [{"type": res.tf_type, "id": res.identifier, "region": res.region, "in_iac": id(res) not in unmanaged,
+                  "reason": idle[id(res)]} for res in inventory.resources if id(res) in idle] or None,
     }
     return Report(findings, "aws", f"{account} ({', '.join(regions)})", coverage=coverage)
 
