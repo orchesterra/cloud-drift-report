@@ -5,6 +5,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-24
+
 ### Added
 - Nearly unused NAT gateways: one that a route table points at but that moved under 1 GB in the last 14 days
   (CloudWatch `BytesOutToDestination` + `BytesInFromDestination`, read with `cloudwatch:GetMetricData`) is
@@ -23,6 +25,7 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
   `owner_id`) names another account no longer marks a same-named resource in the scanned account as
   in IaC, and `--explain` says "recorded for account …". The same id in two accounts' state files is
   no longer reported as a duplicate import.
+- `--version` and the HTML report footer show the installed version; they had said 0.5.0 since that release.
 
 ## [0.6.1] - 2026-11-23
 
@@ -118,7 +121,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.4.0...v0.5.0
