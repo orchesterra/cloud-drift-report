@@ -5,6 +5,12 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- Nearly unused NAT gateways: one that a route table points at but that moved under 1 GB in the last 14 days
+  (CloudWatch `BytesOutToDestination` + `BytesInFromDestination`, read with `cloudwatch:GetMetricData`) is
+  flagged with its monthly cost, at medium severity when it isn't in IaC. Gateways younger than 14 days are
+  skipped, and nothing is said when CloudWatch can't be read.
+
 ### Changed
 - Idle costs use live on-demand prices for the resource's region from the AWS Price List API
   (`pricing:GetProducts`, included in `ReadOnlyAccess`), e.g. about $41 a month for an idle NAT gateway in
