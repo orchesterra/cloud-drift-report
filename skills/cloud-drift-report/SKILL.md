@@ -66,6 +66,8 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
      parent). Mention them so the user knows what was not checked.
    - If the coverage line says "Idle and still billing", name each one and its monthly cost: a NAT gateway no
      route uses, or an Elastic IP attached to nothing. Ones marked "(in IaC)" are removed in code, not in AWS.
+  Costs are that region's list prices; if the finding says "us-east-1 list price used", the Price List API could
+  not be read (it needs `pricing:GetProducts`), so the real cost may differ.
 5. Show the Markdown summary in chat: the counts by severity first, then the high rows.
    For a file to share, rerun with `--format html -o drift-report.html` (or `csv`, `json`).
 6. Explain the high-severity rows in plain words (who might now have access, what is exposed) and suggest the
