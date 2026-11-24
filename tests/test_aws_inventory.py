@@ -1,4 +1,6 @@
+import pytest
 import json
+import pytest
 import sys
 from pathlib import Path
 
@@ -682,3 +684,19 @@ def test_cli_reports_quiet_nat_as_medium(tmp_path, monkeypatch):
     assert found["nat-quiet"]["explanation"].startswith("Not in IaC and nearly unused: a route table points at it")
     assert found["nat-unrouted"]["severity"] == "high"
     assert not found["nat-busy"]["explanation"].startswith("Not in IaC and")  # an ordinary unmanaged gateway
+
+
+def test_disabled_or_unknown_region_stops_before_the_scan():
+    regions = {("ec2", "describe_regions"): {"Regions": [
+        {"RegionName": "us-east-1", "OptInStatus": "opt-in-not-required"},
+        {"RegionName": "me-south-1", "OptInStatus": "not-opted-in"},
+        {"RegionName": "af-south-1", "OptInStatus": "opted-in"}]}}
+    session = FakeSession(regions)
+    inv.check_regions(session, ["us-east-1", "af-south-1"])
+    with pytest.raises(RuntimeError, match="me-south-1 is not enabled for this account"):
+        inv.check_regions(session, ["us-east-1", "me-south-1"])
+    with pytest.raises(RuntimeError, match="Unknown region us-east1"):
+        inv.check_regions(session, ["us-east1"])
+    notes = []
+    inv.check_regions(FakeSession({}), ["me-south-1"], log=lambda m, **k: notes.append(m))  # can't check: scan as asked
+    assert notes and notes[0].startswith("note: could not check which regions are enabled")
