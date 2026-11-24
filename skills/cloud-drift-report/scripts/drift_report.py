@@ -442,6 +442,9 @@ def cfn_client(profile: str | None, region: str | None, args=None):
     session = aws_session(profile, region)
     if args is not None and getattr(args, "role_arn", None):
         session = assume_role(session, args.role_arn, args.external_id, args.role_session_name)
+    import aws_inventory as inv_mod
+
+    inv_mod.check_regions(session, [session.region_name])
     return session.client("cloudformation"), session.region_name
 
 
@@ -910,6 +913,8 @@ def run_unmanaged(args, log=print) -> Report:
     base = aws_session(args.profile, args.region[0] if args.region else None)
     session = assume_role(base, args.role_arn, args.external_id, args.role_session_name) if args.role_arn else base
     regions = inv_mod.enabled_regions(session) if args.all_regions else (args.region or [session.region_name])
+    if not args.all_regions:
+        inv_mod.check_regions(session, regions, log=log)
     iac: list = []
     sources: list[str] = []
     for src in args.state:
@@ -930,7 +935,9 @@ def run_unmanaged(args, log=print) -> Report:
             iac.extend(entries)
         sources.append(f"CloudFormation stacks in {', '.join(regions)} ({stack_total} resources)")
     if not args.state:
-        log("note: no --state given, so only CloudFormation stacks count as IaC. Pass --state to include Terraform.",
+        log("note: no --state and --no-cloudformation, so nothing counts as IaC and every resource is listed."
+            if args.no_cloudformation else
+            "note: no --state given, so only CloudFormation stacks count as IaC. Pass --state to include Terraform.",
             file=sys.stderr)
     cc_types = list(inv_mod.CLOUDCONTROL_TO_TERRAFORM)
     if args.type:

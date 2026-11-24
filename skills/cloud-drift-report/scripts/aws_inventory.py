@@ -1347,7 +1347,34 @@ def explain(inventory: Inventory, iac: list[IacEntry], needle: str, account: str
     return lines
 
 
+def _regions_client(session: Any) -> Any:
+    # Asked from us-east-1 with a short timeout: a call to a region the account hasn't enabled hangs for minutes.
+    try:
+        from botocore.config import Config
+        config = Config(connect_timeout=10, read_timeout=20, retries={"max_attempts": 2})
+    except ImportError:  # fake sessions in tests
+        config = None
+    return session.client("ec2", region_name="us-east-1", config=config)
+
+
 def enabled_regions(session: Any) -> list[str]:
-    ec2 = session.client("ec2", region_name=session.region_name or "us-east-1")
-    rows = ec2.describe_regions(Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}])
+    rows = _regions_client(session).describe_regions(
+        Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}])
     return sorted(r["RegionName"] for r in rows.get("Regions") or [])
+
+
+def check_regions(session: Any, regions: list[str], log: Callable[..., None] = print) -> None:
+    """Stop before scanning a region the account hasn't enabled (or that doesn't exist)."""
+    try:
+        rows = _regions_client(session).describe_regions(AllRegions=True).get("Regions") or []
+    except Exception as exc:  # can't tell; scan as asked
+        log(f"note: could not check which regions are enabled ({_short_reason(str(exc))})", file=sys.stderr)
+        return
+    status = {r["RegionName"]: r.get("OptInStatus", "") for r in rows}
+    off = [r for r in regions if status.get(r) == "not-opted-in"]
+    unknown = [r for r in regions if r not in status]
+    if off:
+        raise RuntimeError(f"{', '.join(off)} {'is' if len(off) == 1 else 'are'} not enabled for this account, so "
+                           "AWS won't answer there. Enable it under Account > AWS Regions, or leave it out.")
+    if unknown:
+        raise RuntimeError(f"Unknown region {', '.join(unknown)}. Check the spelling (e.g. us-east-1).")

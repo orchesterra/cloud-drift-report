@@ -5,6 +5,12 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Fixed
+- A region the account hasn't enabled (an opt-in region such as me-south-1) or a misspelt region now stops the
+  run at once with a clear message. It used to hang for minutes on each call. `--all-regions` asks us-east-1
+  for the region list, so a disabled default region doesn't hang it either.
+- With `--no-cloudformation` and no `--state`, the note says nothing counts as IaC (it said CloudFormation did).
+
 ## [0.7.0] - 2026-11-24
 
 ### Added
