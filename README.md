@@ -253,6 +253,28 @@ Exit codes: `0` ok, `1` error, `2` drift or a resource not in IaC found with `--
 under it) or an initialised Terraform directory (read with `state pull`). It may repeat. Without `--state`,
 only CloudFormation stacks count as IaC.
 
+## Settings file: `.driftreport.yml`
+
+Instead of repeating flags, put them in `.driftreport.yml` in the current directory (or in `--dir` for
+Terraform mode). Keys are the long flag names. Top-level keys apply to every mode, and a `terraform:`,
+`cloudformation:` or `unmanaged:` section applies to that mode only:
+
+```yaml
+format: html
+output: [drift.html, drift.json]
+fail-on-drift: true
+unmanaged:
+  state: [s3://my-tf-state/prod/]
+  region: [us-east-1, eu-west-1]
+  role-arn: arn:aws:iam::123456789012:role/drift-read
+cloudformation:
+  stack: [web, api]
+```
+
+Flags on the command line win; a repeatable flag such as `--region` given there replaces the file's list.
+Relative paths are read from the file's folder. `--config FILE` reads another file, and `--no-config` skips it.
+A misspelt key is an error that names it.
+
 ## Ignoring findings: `.driftignore`
 
 Put a `.driftignore` in the Terraform directory or the folder you run from (or pass `--ignore FILE`). The

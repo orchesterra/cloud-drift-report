@@ -812,6 +812,9 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--no-ignore", action="store_true", help="report everything, ignoring any .driftignore")
     common.add_argument("--share", action="store_true",
                         help="print how to open the JSON report in OrchesTerra (uploads nothing)")
+    common.add_argument("--config", metavar="FILE",
+                        help=f"read defaults from this file (default: {CONFIG_NAMES[0]} in --dir or the current directory)")
+    common.add_argument("--no-config", action="store_true", help=f"don't read {CONFIG_NAMES[0]}")
     sub = p.add_subparsers(dest="mode", required=True)
 
     tf = sub.add_parser("terraform", aliases=["tf", "tofu"], parents=[common],
@@ -1004,8 +1007,98 @@ def ignore_files(args) -> list[str]:
     return list(dict.fromkeys(os.path.join(d, FILENAME_HINT) for d in dirs))
 
 
+# --- config file ---------------------------------------------------------------
+
+CONFIG_NAMES = (".driftreport.yml", ".driftreport.yaml")
+CONFIG_SECTIONS = {"terraform": "terraform", "tf": "terraform", "tofu": "terraform", "cloudformation": "cloudformation",
+                   "cfn": "cloudformation", "unmanaged": "unmanaged", "scan": "unmanaged"}
+_CONFIG_PATHS = {"output", "ignore", "var_file", "dir", "plan_json", "state"}  # relative to the config file
+
+
+def config_path(args) -> str | None:
+    if args.no_config:
+        return None
+    if args.config:
+        if not os.path.isfile(args.config):
+            raise OSError(f"config file {args.config} not found")
+        return args.config
+    dirs = [getattr(args, "dir", None) or ".", "."]
+    return next((os.path.join(d, n) for d in dict.fromkeys(dirs) for n in CONFIG_NAMES
+                 if os.path.isfile(os.path.join(d, n))), None)
+
+
+def apply_config(parser: argparse.ArgumentParser, argv: list[str] | None, args) -> tuple[argparse.Namespace, str | None]:
+    """Flags from a .driftreport.yml: top-level keys for every mode, a section per mode. The command line wins."""
+    path = config_path(args)
+    if path is None:
+        return args, None
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError(f"Reading {path} needs PyYAML: pip install pyyaml") from exc
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected keys such as `format:` or `unmanaged:`, not a {type(data).__name__}")
+    modes = parser._subparsers._group_actions[0].choices
+    mode = CONFIG_SECTIONS[args.mode]
+
+    def flags(name):
+        return {a.dest: a for a in modes[name]._actions if a.option_strings and a.dest not in ("help", "config", "no_config")}
+
+    known = {d for name in set(CONFIG_SECTIONS.values()) for d in flags(name)}
+    mine = flags(mode)
+    wanted: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in CONFIG_SECTIONS:
+            if not isinstance(value, dict):
+                raise ValueError(f"{path}: `{key}:` should hold keys such as `region:`")
+            continue
+        dest = str(key).replace("-", "_")
+        if dest not in known:
+            raise ValueError(f"{path}: unknown key `{key}` (keys are flag names, such as fail-on-drift)")
+        if dest in mine:
+            wanted[dest] = value
+    for key, value in ((k, v) for s, sec in data.items() if CONFIG_SECTIONS.get(s) == mode for k, v in sec.items()):
+        dest = str(key).replace("-", "_")
+        if dest not in mine:
+            raise ValueError(f"{path}: `{key}` isn't a {mode} option")
+        wanted[dest] = value
+    base = os.path.dirname(path)
+    defaults = {}
+    for dest, value in wanted.items():
+        action, flag = mine[dest], dest.replace("_", "-")
+        if isinstance(action, argparse._AppendAction):
+            value = [str(v) for v in (value if isinstance(value, list) else [value])]
+        elif isinstance(action, argparse._StoreTrueAction):
+            if not isinstance(value, bool):
+                raise ValueError(f"{path}: {flag} should be true or false")
+        elif value is not None:
+            value = action.type(value) if action.type else str(value)
+            if action.choices and value not in action.choices:
+                raise ValueError(f"{path}: {flag} should be one of {', '.join(map(str, action.choices))}")
+        if dest in _CONFIG_PATHS and base:
+            value = [v if "://" in v else os.path.normpath(os.path.join(base, v)) for v in value] \
+                if isinstance(value, list) else os.path.normpath(os.path.join(base, value))
+        defaults[dest] = value
+    modes[args.mode].set_defaults(**defaults)
+    merged = parser.parse_args(argv)
+    for dest in defaults:  # a repeatable flag given on the command line replaces the file's list
+        if isinstance(mine[dest], argparse._AppendAction) and getattr(args, dest):
+            setattr(merged, dest, getattr(args, dest))
+    return merged, path
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args, used_config = apply_config(parser, argv, args)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if used_config:
+        print(f"using {os.path.relpath(used_config)}", file=sys.stderr)
     try:
         if args.mode in ("terraform", "tf", "tofu"):
             if args.plan_json:

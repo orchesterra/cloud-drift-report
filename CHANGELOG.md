@@ -11,6 +11,10 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
   that says what was missed and what that means (resources missing, or listed as not in IaC when they
   are). The JSON has an `incomplete` list, and the same warning is printed at the end of the run. Exit
   codes don't change.
+- Settings file: `.driftreport.yml` in the current directory (or `--dir`) sets flags, with top-level keys for
+  every mode and a `terraform:`, `cloudformation:` or `unmanaged:` section per mode. Command-line flags win,
+  relative paths are read from the file's folder, and a misspelt key is an error. `--config FILE` and
+  `--no-config`. PyYAML is now a dependency.
 
 ### Fixed
 - An `account_id` in state no longer sets the resource's account: on member and sharing types such as
