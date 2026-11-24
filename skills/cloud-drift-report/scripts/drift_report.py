@@ -918,9 +918,13 @@ def run_unmanaged(args, log=print) -> Report:
     owned = {id(res): why for res, why in inventory.owned}
     if args.strict:  # report what AWS created too, so nothing is skipped silently
         inventory.resources += [res for res, _ in inventory.owned]
-    for line in (inv_mod.explain(inventory, iac, args.explain) if args.explain else []):
+    try:
+        account = session.client("sts").get_caller_identity()["Account"]
+    except Exception:
+        account = ""
+    for line in (inv_mod.explain(inventory, iac, args.explain, account) if args.explain else []):
         log(line, file=sys.stderr)
-    result = inv_mod.match(inventory, iac)
+    result = inv_mod.match(inventory, iac, account)
     unmanaged = {id(res) for res in result.unmanaged}
     prices = inv_mod.Prices(session, log=log)
     idle = {id(res): found for res in inventory.resources if (found := inv_mod.idle_cost(res, prices))}
@@ -941,10 +945,6 @@ def run_unmanaged(args, log=print) -> Report:
     for d in duplicates:
         log(f"warning: {d['type']} {d['id']} is in state at {len(d['addresses'])} addresses: "
             f"{'; '.join(d['addresses'])}", file=sys.stderr)
-    try:
-        account = session.client("sts").get_caller_identity()["Account"]
-    except Exception:
-        account = "AWS account"
     by_type: dict[str, dict[str, int]] = {}
     for res, _ in result.managed:
         by_type.setdefault(res.tf_type, {"in_iac": 0, "not_in_iac": 0})["in_iac"] += 1
@@ -961,7 +961,7 @@ def run_unmanaged(args, log=print) -> Report:
                   "reason": idle[id(res)][0], "monthly_usd": round(idle[id(res)][1], 2)}
                  for res in inventory.resources if id(res) in idle] or None,
     }
-    return Report(findings, "aws", f"{account} ({', '.join(regions)})", coverage=coverage)
+    return Report(findings, "aws", f"{account or 'AWS account'} ({', '.join(regions)})", coverage=coverage)
 
 
 def ignore_files(args) -> list[str]:

@@ -308,6 +308,12 @@ def _arn_region(arn: str) -> str:
     return parts[3] if len(parts) > 5 and arn.startswith("arn:") else ""
 
 
+def _arn_account(arn: str) -> str:
+    parts = arn.split(":")
+    account = parts[4] if len(parts) > 5 and arn.startswith("arn:") else ""
+    return account if re.fullmatch(r"\d{12}", account) else ""
+
+
 def _paginate(client: Any, method: str, key: str, **kwargs: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if client.can_paginate(method):
@@ -1114,6 +1120,7 @@ class IacEntry:
     where: str            # state file or stack
     address: str = ""     # Terraform address (module.x.aws_s3_bucket.logs["a"]), or the stack's logical id
     ident: str = ""       # the state's `id` attribute
+    account: str = ""     # AWS account the state recorded, when its ARN or owner says
 
 
 def _state_tokens(attrs: dict[str, Any]) -> tuple[frozenset[str], str]:
@@ -1136,6 +1143,17 @@ def _state_tokens(attrs: dict[str, Any]) -> tuple[frozenset[str], str]:
     return frozenset(tokens), region
 
 
+def _state_account(attrs: dict[str, Any]) -> str:
+    # Only the resource's own ARN or owner: other *_arn attributes may point into another account.
+    for key in ("arn", "id"):
+        if isinstance(attrs.get(key), str) and (account := _arn_account(attrs[key])):
+            return account
+    for key in ("owner_id", "account_id"):
+        if isinstance(attrs.get(key), str) and re.fullmatch(r"\d{12}", attrs[key]):
+            return attrs[key]
+    return ""
+
+
 def parse_state(doc: dict[str, Any], where: str) -> list[IacEntry]:
     """Managed resources in a Terraform state file (format version 4)."""
     out = []
@@ -1150,18 +1168,19 @@ def parse_state(doc: dict[str, Any], where: str) -> list[IacEntry]:
             if tokens:
                 key = inst.get("index_key")
                 address = base + (f"[{json.dumps(key)}]" if key is not None else "")
-                out.append(IacEntry(tf_type, "", tokens, region, where, address, str(attrs.get("id") or "")))
+                out.append(IacEntry(tf_type, "", tokens, region, where, address, str(attrs.get("id") or ""),
+                                    _state_account(attrs)))
     return out
 
 
 def duplicate_imports(iac: list[IacEntry]) -> list[dict[str, Any]]:
     """One cloud resource at two or more Terraform addresses: two applies would fight over it."""
-    seen: dict[tuple[str, str, str], list[IacEntry]] = {}
+    seen: dict[tuple[str, str, str, str], list[IacEntry]] = {}
     for e in iac:
         if e.tf_type and e.ident:
-            seen.setdefault((e.tf_type, e.ident, e.region), []).append(e)
+            seen.setdefault((e.tf_type, e.ident, e.region, e.account), []).append(e)
     return [{"type": t, "id": i, "addresses": [f"{e.address} ({e.where})" for e in entries]}
-            for (t, i, _), entries in sorted(seen.items()) if len(entries) > 1]
+            for (t, i, _, _), entries in sorted(seen.items()) if len(entries) > 1]
 
 
 def read_state_source(source: str, session: Any = None, binary: str | None = None,
@@ -1237,7 +1256,8 @@ class Match:
     managed: list[tuple[LiveResource, str]]
 
 
-def match(inventory: Inventory, iac: list[IacEntry]) -> Match:
+def match(inventory: Inventory, iac: list[IacEntry], account: str = "") -> Match:
+    """`account` is the scanned account: a state entry recorded for another account never matches."""
     by_tf: dict[str, list[IacEntry]] = {}
     by_cc: dict[str, list[IacEntry]] = {}
     for e in iac:
@@ -1249,7 +1269,7 @@ def match(inventory: Inventory, iac: list[IacEntry]) -> Match:
     for res in inventory.resources:
         tf = TERRAFORM_TYPE_ALIASES.get(res.tf_type, res.tf_type)
         candidates = by_tf.get(tf, []) + by_cc.get(res.cc_type, [])
-        hit = _find(res, candidates)
+        hit = _find(res, candidates, account)
         if hit:
             managed.append((res, hit.where))
         else:
@@ -1257,17 +1277,25 @@ def match(inventory: Inventory, iac: list[IacEntry]) -> Match:
     return Match(unmanaged, managed)
 
 
-def _find(res: LiveResource, candidates: list[IacEntry]) -> IacEntry | None:
+def _other_account(entry: IacEntry, res: LiveResource, account: str) -> str:
+    """The account a state entry was recorded for, when that is not the live resource's account."""
+    live = _arn_account(res.arn) or account
+    return entry.account if entry.account and live and entry.account != live else ""
+
+
+def _find(res: LiveResource, candidates: list[IacEntry], account: str = "") -> IacEntry | None:
     keys = res.keys()
     for entry in candidates:
         if entry.region and res.region and entry.region != res.region:
+            continue
+        if _other_account(entry, res, account):
             continue
         if any(key <= entry.tokens for key in keys):
             return entry
     return None
 
 
-def explain(inventory: Inventory, iac: list[IacEntry], needle: str) -> list[str]:
+def explain(inventory: Inventory, iac: list[IacEntry], needle: str, account: str = "") -> list[str]:
     """Why each listed resource whose id, name or ARN contains `needle` did or didn't match IaC."""
     lines: list[str] = []
     found = [(r, "") for r in inventory.resources] + list(inventory.owned)
@@ -1283,7 +1311,7 @@ def explain(inventory: Inventory, iac: list[IacEntry], needle: str) -> list[str]
             continue
         tf = TERRAFORM_TYPE_ALIASES.get(res.tf_type, res.tf_type)
         same_type = [e for e in iac if e.tf_type == tf or (e.cc_type and e.cc_type == res.cc_type)]
-        hit = _find(res, same_type)
+        hit = _find(res, same_type, account)
         keys = sorted("+".join(sorted(k)) for k in res.keys())
         if hit:
             where = f"{hit.address} in {hit.where}" if hit.address else hit.where
@@ -1296,7 +1324,9 @@ def explain(inventory: Inventory, iac: list[IacEntry], needle: str) -> list[str]
         wanted = set().union(*res.keys()) if res.keys() else set()
         near = [e for e in same_type if e.tokens & wanted]
         for e in near[:5]:
+            other = _other_account(e, res, account)
             why_not = (f"recorded for region {e.region}" if e.region and res.region and e.region != res.region
+                       else f"recorded for account {other}" if other
                        else "shares only part of a composite id")
             lines.append(f"  Close: {e.address or e.where} in {e.where} ({why_not}).")
         if not near:

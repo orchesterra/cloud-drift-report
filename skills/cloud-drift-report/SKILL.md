@@ -59,7 +59,7 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
    - Resources AWS creates itself (default VPCs, service-linked roles, AWS-managed keys and policies,
      resources other AWS services own) are skipped and counted, not reported.
    - If the user says a resource is in IaC but it was reported, rerun with `--explain <id or name>` and relay
-     what it says (no entry of that type, another region, or the values it looked for).
+     what it says (no entry of that type, another region or account, or the values it looked for).
    - The coverage line's "% in IaC" is the headline number; mention any "in state at more than one address"
      warning, since two applies would fight over that resource.
    - Read the coverage line: it lists type/region pairs that could not be listed (access denied, needs a
