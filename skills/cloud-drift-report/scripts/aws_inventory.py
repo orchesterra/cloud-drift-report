@@ -1144,14 +1144,14 @@ def _state_tokens(attrs: dict[str, Any]) -> tuple[frozenset[str], str]:
 
 
 def _state_account(attrs: dict[str, Any]) -> str:
-    # Only the resource's own ARN or owner: other *_arn attributes may point into another account.
+    # Only the resource's own ARN or owner: other *_arn attributes may point into another account, and
+    # account_id names the other side on member and sharing types (aws_guardduty_member,
+    # aws_ami_launch_permission, aws_cloudformation_stack_set_instance).
     for key in ("arn", "id"):
         if isinstance(attrs.get(key), str) and (account := _arn_account(attrs[key])):
             return account
-    for key in ("owner_id", "account_id"):
-        if isinstance(attrs.get(key), str) and re.fullmatch(r"\d{12}", attrs[key]):
-            return attrs[key]
-    return ""
+    owner = attrs.get("owner_id")
+    return owner if isinstance(owner, str) and re.fullmatch(r"\d{12}", owner) else ""
 
 
 def parse_state(doc: dict[str, Any], where: str) -> list[IacEntry]:

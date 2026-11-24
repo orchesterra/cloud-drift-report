@@ -229,6 +229,10 @@ def test_same_name_in_another_account_is_not_managed():
     perm = {"resources": [{"mode": "managed", "type": "aws_lambda_permission", "instances": [
         {"attributes": {"id": "allow-s3", "source_arn": "arn:aws:s3:us-east-1:333333333333:x"}}]}]}
     assert inv.parse_state(perm, "s")[0].account == ""
+    # On member and sharing types account_id is the other side, so it doesn't set the account.
+    member = {"resources": [{"mode": "managed", "type": "aws_guardduty_member", "instances": [
+        {"attributes": {"id": "det1:333333333333", "detector_id": "det1", "account_id": "333333333333"}}]}]}
+    assert inv.parse_state(member, "s")[0].account == ""
     lines = inv.explain(inv.Inventory(resources=[in_b]), entries, "/app/api", "222222222222")
     assert lines[1] == "  Close: aws_cloudwatch_log_group in s (recorded for account 111111111111)."
     # The same id in two accounts' state files is not a duplicate import.
