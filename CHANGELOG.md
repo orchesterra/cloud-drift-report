@@ -14,6 +14,10 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 - Import blocks: `-o imports.tf` (or `-f imports`) writes a Terraform `import {}` block for every resource not
   in IaC, grouped by region, ready for `terraform plan -generate-config-out=generated.tf`. Blocks whose import ID
   isn't known are commented out with a note. JSON findings carry `import_id`.
+- Many state files in one run: a `--state` source or a file under an S3 prefix that can't be read or parsed no
+  longer stops the run; it is named in the incomplete-scan warning and the rest still count. The run stops only
+  when no `--state` can be read at all. Empty state files are skipped, and a folder of `.tfstate` files (no
+  `.tf` files) is read file by file.
 
 ## [0.7.1] - 2026-11-24
 

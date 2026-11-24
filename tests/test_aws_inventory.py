@@ -817,3 +817,54 @@ def test_import_blocks_for_resources_not_in_iac(tmp_path, monkeypatch):
     taken = set()
     assert [dr._tf_name(n, taken) for n in ("web-app", "web.app", "9lives", "arn:aws:sns:us-east-1:1:Alerts")] == \
         ["web_app", "web_app_2", "r_9lives", "alerts"]
+
+
+def test_one_unreadable_state_file_does_not_stop_the_others(tmp_path):
+    good = json.dumps(STATE).encode()
+
+    def get_object(region, Bucket, Key, **kw):
+        if Key.endswith("denied.tfstate"):
+            raise RuntimeError("AccessDenied: s3:GetObject")
+        body = {"env/prod.tfstate": good, "env/broken.tfstate": b"{not json", "env/empty.tfstate": b""}[Key]
+
+        class _Body:
+            def read(self):
+                return body
+        return {"Body": _Body()}
+    keys = ["env/prod.tfstate", "env/broken.tfstate", "env/empty.tfstate", "env/denied.tfstate", "env/notes.txt"]
+    s3 = {("s3", "list_objects_v2"): {"Contents": [{"Key": k} for k in keys]}, ("s3", "get_object"): get_object}
+    problems = []
+    docs = inv.read_state_source("s3://b/env/", FakeSession(s3), problems=problems)
+    assert [label for label, _ in docs] == ["s3://b/env/prod.tfstate"]
+    assert problems == ["state s3://b/env/broken.tfstate could not be read (not JSON: Expecting property name "
+                        "enclosed in double quotes: line 1 column 2 (char 1))",
+                        "state s3://b/env/denied.tfstate could not be read (access denied)"]
+    # Every object denied: raise, so the caller can try the assumed role.
+    only_denied = {**s3, ("s3", "list_objects_v2"): {"Contents": [{"Key": "a/denied.tfstate"}, {"Key": "b/denied.tfstate"}]}}
+    with pytest.raises(RuntimeError, match="AccessDenied"):
+        inv.read_state_source("s3://b/", FakeSession(only_denied), problems=[])
+
+    folder = tmp_path / "states"
+    (folder / "eu").mkdir(parents=True)
+    (folder / "eu" / "app.tfstate").write_text(json.dumps(STATE))
+    (folder / "old.tfstate").write_text(json.dumps({"version": 3, "modules": []}))
+    problems = []
+    docs = inv.read_state_source(str(folder), problems=problems)
+    assert [label for label, _ in docs] == [str(folder / "eu" / "app.tfstate")]
+    assert "old state format" in problems[0]
+
+
+def test_cli_goes_on_without_an_unreadable_state_but_not_without_all(tmp_path, monkeypatch, capsys):
+    state_file = tmp_path / "prod.tfstate"
+    state_file.write_text(json.dumps(STATE))
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(AWS))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    out = tmp_path / "r.json"
+    code = dr.main(["unmanaged", "--region", "us-east-1", "--state", str(state_file), "--state",
+                    str(tmp_path / "missing.tfstate"), "-f", "json", "-o", str(out)])
+    assert code == 0
+    doc = json.loads(out.read_text())
+    assert {f["address"] for f in doc["findings"]} == {"deploy", "clickops"}  # prod.tfstate still counted
+    assert any("missing.tfstate could not be read" in p for p in doc["incomplete"])
+    assert dr.main(["unmanaged", "--region", "us-east-1", "--state", str(tmp_path / "missing.tfstate")]) == 1
+    assert "No --state could be read" in capsys.readouterr().err

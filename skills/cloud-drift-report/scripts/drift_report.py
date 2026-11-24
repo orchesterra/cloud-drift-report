@@ -937,15 +937,23 @@ def assume_role(session, role_arn: str, external_id: str | None = None, session_
     return boto3.Session(botocore_session=core, region_name=session.region_name)
 
 
-def read_state(src: str, base, session, read):
+def read_state(src: str, base, session, read, problems: list[str] | None = None):
     """State often lives in a central account: read it as yourself first, then as the assumed role."""
+    def attempt(creds):
+        if problems is None:
+            return read(src, session=creds)
+        noted: list[str] = []  # kept only from the attempt that worked
+        docs = read(src, session=creds, problems=noted)
+        problems.extend(noted)
+        return docs
+
     if session is base or not src.startswith("s3://"):
-        return read(src, session=session)
+        return attempt(session)
     try:
-        return read(src, session=base)
+        return attempt(base)
     except Exception as own:
         try:
-            return read(src, session=session)
+            return attempt(session)
         except Exception as assumed:
             raise RuntimeError(f"Could not read {src} with your own credentials ({own}) "
                                f"or with the assumed role ({assumed}).") from assumed
@@ -961,8 +969,17 @@ def run_unmanaged(args, log=print) -> Report:
         inv_mod.check_regions(session, regions, log=log)
     iac: list = []
     sources: list[str] = []
+    problems: list[str] = []
+    unread = 0
     for src in args.state:
-        docs = read_state(src, base, session, inv_mod.read_state_source)
+        try:  # one unreadable source (or file in it) doesn't stop the others
+            docs = read_state(src, base, session, inv_mod.read_state_source, problems)
+        except Exception as exc:
+            unread += 1
+            problems.append(f"state {src} could not be read ({inv_mod._short_reason(str(exc))}); "
+                            "its resources are listed as not in IaC")
+            log(f"warning: could not read state {src}: {exc}", file=sys.stderr)
+            continue
         count = 0
         for label, doc in docs:
             entries = inv_mod.parse_state(doc, label)
@@ -970,7 +987,9 @@ def run_unmanaged(args, log=print) -> Report:
             count += len(entries)
         files = f"{len(docs)} state files, " if len(docs) != 1 else ""
         sources.append(f"{src} ({files}{count} resources)")
-    problems: list[str] = []
+    if args.state and unread == len(args.state):
+        raise RuntimeError("No --state could be read, so every resource would be reported as not in IaC: "
+                           + "; ".join(problems))
     if not args.no_cloudformation:
         stack_total = 0
         for region in regions:

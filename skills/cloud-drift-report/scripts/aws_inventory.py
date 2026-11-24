@@ -1336,19 +1336,62 @@ def duplicate_imports(iac: list[IacEntry]) -> list[dict[str, Any]]:
             for (t, i, _, _), entries in sorted(seen.items()) if len(entries) > 1]
 
 
+def _state_doc(label: str, raw: bytes | str, problems: list[str] | None) -> dict[str, Any] | None:
+    """The parsed state, or None (noted in problems) when it isn't a state file this tool reads."""
+    if not (raw.strip() if isinstance(raw, str) else raw.strip()):
+        return None  # an empty object, e.g. a workspace that was never applied: nothing to compare
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        reason = f"not JSON: {exc}"
+    else:
+        if isinstance(doc, dict) and int(doc.get("version") or 4) >= 4:
+            return doc
+        reason = "an old state format (version 3 or earlier); run terraform state pull with a current Terraform"
+    if problems is None:
+        raise ValueError(f"{label} is {reason}")
+    problems.append(f"state {label} could not be read ({reason})")
+    return None
+
+
 def read_state_source(source: str, session: Any = None, binary: str | None = None,
-                      runner=subprocess.run) -> list[tuple[str, dict[str, Any]]]:
-    """(label, state doc) for a local file, s3://bucket/key, s3://bucket/prefix/, or a Terraform directory."""
+                      runner=subprocess.run, problems: list[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
+    """(label, state doc) for a local file, s3://bucket/key, s3://bucket/prefix/, a Terraform directory, or a
+    folder of .tfstate files. With `problems`, a file in a prefix or folder that can't be read is noted there
+    and the others are still returned."""
     if source.startswith("s3://"):
         bucket, _, key = source[5:].partition("/")
         s3 = session.client("s3")
         keys = [key] if key.endswith(".tfstate") else [
             o["Key"] for o in _paginate(s3, "list_objects_v2", "Contents", Bucket=bucket, Prefix=key)
             if o["Key"].endswith(".tfstate")]
-        docs = []
+        docs, failed = [], []
         for k in keys:
-            body = s3.get_object(Bucket=bucket, Key=k)["Body"].read()
-            docs.append((f"s3://{bucket}/{k}", json.loads(body)))
+            label = f"s3://{bucket}/{k}"
+            try:
+                body = s3.get_object(Bucket=bucket, Key=k)["Body"].read()
+            except Exception as exc:
+                if problems is None or len(keys) == 1:
+                    raise
+                failed.append((label, exc))
+                continue
+            if (doc := _state_doc(label, body, problems)) is not None:
+                docs.append((label, doc))
+        if failed and len(failed) == len(keys):  # nothing readable: let the caller try other credentials
+            raise failed[0][1]
+        problems = problems if problems is not None else []
+        problems += [f"state {label} could not be read ({_short_reason(str(exc))})" for label, exc in failed]
+        return docs
+    if os.path.isdir(source) and not any(name.endswith(".tf") for name in os.listdir(source)):
+        files = sorted(os.path.join(root, name) for root, _, names in os.walk(source)
+                       for name in names if name.endswith(".tfstate"))
+        if not files:
+            raise RuntimeError(f"{source} has no .tf files and no .tfstate files.")
+        docs = []
+        for path in files:
+            with open(path, "rb") as fh:
+                if (doc := _state_doc(path, fh.read(), problems)) is not None:
+                    docs.append((path, doc))
         return docs
     if os.path.isdir(source):
         tf = binary or next((b for b in ("tofu", "terraform") if _which(b)), None)
@@ -1358,8 +1401,9 @@ def read_state_source(source: str, session: Any = None, binary: str | None = Non
         if proc.returncode != 0:
             raise RuntimeError(f"`{tf} state pull` in {source} failed:\n{proc.stderr or proc.stdout}")
         return [(source, json.loads(proc.stdout or "{}"))]
-    with open(source, encoding="utf-8") as fh:
-        return [(source, json.load(fh))]
+    with open(source, "rb") as fh:
+        doc = _state_doc(source, fh.read(), None)
+    return [(source, doc)] if doc is not None else []
 
 
 def _which(name: str) -> bool:
