@@ -297,8 +297,10 @@ terraform plan -generate-config-out=generated.tf
 
 A `.tf` output file always gets import blocks (or pass `-f imports`). Each block uses the resource's
 Terraform import ID; where that isn't known (some resources have composite IDs), the block is written
-commented out with a note, so you can fix the ID from the provider docs. Review `generated.tf`, delete the
-blocks you don't want to manage, then apply. The JSON report has the same IDs as `import_id`.
+commented out with a note, so you can fix the ID from the provider docs. Terraform's generated code is
+experimental and often needs small fixes before the plan passes (it can write zero values such as
+`volume_initialization_rate = 0` or two arguments that conflict); the errors name the line. Review
+`generated.tf`, delete the blocks you don't want to manage, then apply. The JSON report has the same IDs as `import_id`.
 
 ## Ignoring findings: `.driftignore`
 
