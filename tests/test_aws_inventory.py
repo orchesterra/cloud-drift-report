@@ -790,3 +790,30 @@ def test_ebs_and_load_balancer_prices_are_read_per_region():
     prices = inv.Prices(FakeSession({("pricing", "get_products"): products}))
     assert prices.rate("ebs:gp3", "ap-south-1") == (0.0912, True)
     assert prices.rate("alb", "ap-south-1") == (0.0239, True)
+
+
+def test_import_blocks_for_resources_not_in_iac(tmp_path, monkeypatch):
+    waf = _live("aws_wafv2_web_acl", "edge|a1b2|REGIONAL")
+    assert inv.import_id(waf) == "a1b2/edge/REGIONAL"
+    assert inv.import_id(_live("aws_ecs_service", "arn:svc|arn:cluster")) == ""  # composite: not guessed
+    assert inv.import_id(_live("aws_iam_role", "deploy")) == "deploy"
+
+    state_file = tmp_path / "prod.tfstate"
+    state_file.write_text(json.dumps(STATE))
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(AWS))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    out = tmp_path / "imports.tf"
+    dr.main(["unmanaged", "--region", "us-east-1", "--state", str(state_file), "-o", str(out)])
+    text = out.read_text()
+    assert "terraform plan -generate-config-out=generated.tf" in text
+    assert 'import {\n  to = aws_iam_role.deploy\n  id = "deploy"\n}' in text
+    assert "to = aws_sqs_queue.clickops" in text
+    assert "# --- us-east-1 ---" in text
+    report = dr.Report([dr.Finding(source="aws", location="us-east-1", address="svc", type="aws_ecs_service",
+                                   action=dr.UNMANAGED, physical_id="arn:svc|arn:cluster")], "aws", "x")
+    commented = dr.render_imports(report)
+    assert "# aws_ecs_service svc: import ID not known" in commented and "# import {" in commented
+    assert "\nimport {" not in commented
+    taken = set()
+    assert [dr._tf_name(n, taken) for n in ("web-app", "web.app", "9lives", "arn:aws:sns:us-east-1:1:Alerts")] == \
+        ["web_app", "web_app_2", "r_9lives", "alerts"]

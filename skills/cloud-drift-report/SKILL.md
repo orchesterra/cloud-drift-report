@@ -104,3 +104,7 @@ findings out; the syntax is driftctl's: `<type>.<id>` with `*` wildcards, `<type
 shows everything. When the user wants to stop seeing a finding, suggest the rule rather than editing the
 report, and show it before adding it to their `.driftignore`. `-f driftignore -o .driftignore` writes a
 baseline of everything found now; ask before overwriting an existing file.
+
+When the user wants resources that aren't in IaC brought into Terraform, `-o imports.tf` (or `-f imports`)
+writes an `import {}` block per finding; they then run `terraform plan -generate-config-out=generated.tf` and
+review the code before applying. Blocks whose import ID isn't known are commented out with a note: say so.

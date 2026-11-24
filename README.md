@@ -280,6 +280,20 @@ Flags on the command line win; a repeatable flag such as `--region` given there 
 Relative paths are read from the file's folder. `--config FILE` reads another file, and `--no-config` skips it.
 A misspelt key is an error that names it.
 
+## Bringing resources into Terraform: import blocks
+
+Write the not-in-IaC findings as Terraform `import {}` blocks, then let Terraform write the code:
+
+```bash
+cloud-drift-report unmanaged --state s3://my-tf-state/prod/ -o imports.tf
+terraform plan -generate-config-out=generated.tf
+```
+
+A `.tf` output file always gets import blocks (or pass `-f imports`). Each block uses the resource's
+Terraform import ID; where that isn't known (some resources have composite IDs), the block is written
+commented out with a note, so you can fix the ID from the provider docs. Review `generated.tf`, delete the
+blocks you don't want to manage, then apply. The JSON report has the same IDs as `import_id`.
+
 ## Ignoring findings: `.driftignore`
 
 Put a `.driftignore` in the Terraform directory or the folder you run from (or pass `--ignore FILE`). The

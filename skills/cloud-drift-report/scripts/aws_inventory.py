@@ -1056,6 +1056,29 @@ def _short_reason(text: str) -> str:
     return text.splitlines()[0][:160]
 
 
+# --- import blocks -----------------------------------------------------------
+
+def _wafv2_import_id(ident: str) -> str:
+    name, _, rest = ident.partition("|")
+    acl_id, _, scope = rest.partition("|")
+    return f"{acl_id}/{name}/{scope}" if acl_id and scope else ""
+
+
+# Terraform import IDs that differ from the listed identifier. Anything else with a "|" in it is a composite
+# Cloud Control key that Terraform won't take, so no ID is given for it.
+_IMPORT_IDS: dict[str, Callable[[str], str]] = {
+    "aws_wafv2_web_acl": _wafv2_import_id,
+}
+
+
+def import_id(res: LiveResource) -> str:
+    """The ID `terraform import` / an `import {}` block takes for this resource, or "" when not known."""
+    convert = _IMPORT_IDS.get(res.tf_type)
+    if convert:
+        return convert(res.identifier)
+    return "" if "|" in res.identifier else res.identifier
+
+
 # --- idle and still billing ------------------------------------------------
 # Hourly on-demand rates come from the AWS Price List API for the resource's region. When that can't be
 # read (no pricing:GetProducts, no network), the us-east-1 list prices below are used and the text says so.

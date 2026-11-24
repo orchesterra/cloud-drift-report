@@ -11,6 +11,9 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
   instances, and EBS snapshots that look abandoned (older than 90 days, volume gone, no AMI uses them, not
   from AWS Backup or Data Lifecycle Manager; medium). Snapshots are listed only when they look abandoned.
   Volumes and load balancers younger than 7 days aren't judged. Prices are live per region.
+- Import blocks: `-o imports.tf` (or `-f imports`) writes a Terraform `import {}` block for every resource not
+  in IaC, grouped by region, ready for `terraform plan -generate-config-out=generated.tf`. Blocks whose import ID
+  isn't known are commented out with a note. JSON findings carry `import_id`.
 
 ## [0.7.1] - 2026-11-24
 
