@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
 PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
