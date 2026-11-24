@@ -208,6 +208,33 @@ def test_same_name_in_another_region_is_not_managed():
     assert [r.region for r in result.unmanaged] == ["eu-west-1"]
 
 
+
+def test_same_name_in_another_account_is_not_managed():
+    # Only account A's state is supplied; scanning account B, B's /app/api must stay not in IaC.
+    state = {"resources": [{"mode": "managed", "type": "aws_cloudwatch_log_group", "instances": [
+        {"attributes": {"id": "/app/api", "name": "/app/api",
+                        "arn": "arn:aws:logs:us-east-1:111111111111:log-group:/app/api"}}]}]}
+    entries = inv.parse_state(state, "s")
+    assert entries[0].account == "111111111111"
+    in_b = _live("aws_cloudwatch_log_group", "/app/api", "us-east-1")
+    assert inv.match(inv.Inventory(resources=[in_b]), entries, "222222222222").unmanaged == [in_b]
+    assert inv.match(inv.Inventory(resources=[in_b]), entries, "111111111111").unmanaged == []
+    # The live ARN's account wins over the scanned one, and owner_id counts when there is no ARN.
+    in_b.arn = "arn:aws:logs:us-east-1:222222222222:log-group:/app/api"
+    assert inv.match(inv.Inventory(resources=[in_b]), entries).unmanaged == [in_b]
+    vpc = {"resources": [{"mode": "managed", "type": "aws_vpc", "instances": [
+        {"attributes": {"id": "vpc-1", "owner_id": "111111111111"}}]}]}
+    assert inv.parse_state(vpc, "s")[0].account == "111111111111"
+    # Another resource's ARN in an attribute says nothing about this one's account.
+    perm = {"resources": [{"mode": "managed", "type": "aws_lambda_permission", "instances": [
+        {"attributes": {"id": "allow-s3", "source_arn": "arn:aws:s3:us-east-1:333333333333:x"}}]}]}
+    assert inv.parse_state(perm, "s")[0].account == ""
+    lines = inv.explain(inv.Inventory(resources=[in_b]), entries, "/app/api", "222222222222")
+    assert lines[1] == "  Close: aws_cloudwatch_log_group in s (recorded for account 111111111111)."
+    # The same id in two accounts' state files is not a duplicate import.
+    other = json.loads(json.dumps(state).replace("111111111111", "222222222222"))
+    assert inv.duplicate_imports(entries + inv.parse_state(other, "t")) == []
+
 def test_terraform_type_aliases_match():
     state = {"resources": [{"mode": "managed", "type": "aws_alb", "instances": [
         {"attributes": {"id": "arn:aws:elasticloadbalancing:us-east-1:1:loadbalancer/app/web/abc",

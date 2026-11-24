@@ -18,6 +18,12 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
   says so. Monthly figures use 730 hours, so us-east-1 now shows $32.85 and $3.65 rather than $32 and $3.60.
 - The JSON's `idle` entries have a `monthly_usd` number.
 
+### Fixed
+- Not-in-IaC matching now checks the AWS account as well as the region. A state entry whose ARN (or
+  `owner_id`) names another account no longer marks a same-named resource in the scanned account as
+  in IaC, and `--explain` says "recorded for account …". The same id in two accounts' state files is
+  no longer reported as a duplicate import.
+
 ## [0.6.1] - 2026-11-23
 
 ### Fixed
