@@ -255,9 +255,14 @@ cloud-drift-report terraform --dir ./infra --fail-on-drift
 Exit codes: `0` ok, `1` error, `2` drift or a resource not in IaC found with `--fail-on-drift`.
 
 `--state` takes a local `.tfstate` file, `s3://bucket/key.tfstate`, `s3://bucket/prefix/` (every `.tfstate`
-under it), an initialised Terraform directory (read with `state pull`) or a folder of `.tfstate` files. It may
-repeat. A source or file that can't be read is named in the incomplete-scan warning and the others still count;
-the run stops only when no `--state` can be read. Without `--state`, only CloudFormation stacks count as IaC.
+under it), a Terraform directory or a folder of `.tfstate` files. For a Terraform directory the backend is
+read from the code (or from `.terraform/` after `terraform init`), and every workspace's state is read: an S3
+backend's default key and its `env:/<workspace>/` keys, local state and `terraform.tfstate.d/`, or each HCP
+Terraform / Terraform Enterprise workspace a `cloud` block or `remote` backend names (token from
+`TF_TOKEN_app_terraform_io` or `terraform login`). Other backends are read with `state pull`. With no `--state`,
+a Terraform directory you run it from is used. It may repeat. A source or file that can't be read is named in the incomplete-scan warning and the others still count;
+the run stops only when no `--state` can be read. Without `--state` and outside Terraform code, only
+CloudFormation stacks count as IaC.
 
 ## Settings file: `.driftreport.yml`
 

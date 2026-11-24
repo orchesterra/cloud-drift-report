@@ -1336,6 +1336,19 @@ def duplicate_imports(iac: list[IacEntry]) -> list[dict[str, Any]]:
             for (t, i, _, _), entries in sorted(seen.items()) if len(entries) > 1]
 
 
+def _optional_s3(s3: Any, bucket: str, key: str, problems: list[str]) -> list[tuple[str, dict[str, Any]]]:
+    """The default workspace's state; missing is fine when only named workspaces were ever applied."""
+    label = f"s3://{bucket}/{key}"
+    try:
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except Exception as exc:
+        if "NoSuchKey" in f"{type(exc).__name__} {exc}":
+            return []
+        raise
+    doc = _state_doc(label, body, problems)
+    return [(label, doc)] if doc is not None else []
+
+
 def _state_doc(label: str, raw: bytes | str, problems: list[str] | None) -> dict[str, Any] | None:
     """The parsed state, or None (noted in problems) when it isn't a state file this tool reads."""
     if not (raw.strip() if isinstance(raw, str) else raw.strip()):
@@ -1393,7 +1406,34 @@ def read_state_source(source: str, session: Any = None, binary: str | None = Non
                 if (doc := _state_doc(path, fh.read(), problems)) is not None:
                     docs.append((path, doc))
         return docs
-    if os.path.isdir(source):
+    if os.path.isdir(source) and (backend := terraform_backend(source)) is not None:
+        noted = problems if problems is not None else []
+        if backend["type"] == "s3" and backend.get("bucket") and backend.get("key"):
+            s3 = session.client("s3", region_name=backend.get("region") or None)
+            keys = _s3_workspace_keys(s3, backend)
+            docs, failed = [], []
+            for key in keys:
+                try:
+                    docs += _optional_s3(s3, backend["bucket"], key, noted)
+                except Exception as exc:
+                    failed.append((f"s3://{backend['bucket']}/{key}", exc))
+            if failed and len(failed) == len(keys):  # nothing readable: let the caller try other credentials
+                raise failed[0][1]
+            noted += [f"state {label} could not be read ({_short_reason(str(exc))})" for label, exc in failed]
+            return docs
+        if backend["type"] == "local":
+            files = _local_state_files(source, backend)
+            if not files:
+                raise RuntimeError(f"{source} uses local state, but there is no terraform.tfstate yet.")
+            docs = []
+            for path in files:
+                with open(path, "rb") as fh:
+                    if (doc := _state_doc(path, fh.read(), noted)) is not None:
+                        docs.append((path, doc))
+            return docs
+        if backend["type"] in ("cloud", "remote"):
+            return tfc_states(backend, noted)
+    if os.path.isdir(source):  # another backend type: let Terraform read it
         tf = binary or next((b for b in ("tofu", "terraform") if _which(b)), None)
         if not tf:
             raise RuntimeError("Neither `tofu` nor `terraform` was found on PATH to read state from a directory.")
@@ -1404,6 +1444,143 @@ def read_state_source(source: str, session: Any = None, binary: str | None = Non
     with open(source, "rb") as fh:
         doc = _state_doc(source, fh.read(), None)
     return [(source, doc)] if doc is not None else []
+
+
+# --- finding state from Terraform code --------------------------------------
+
+def _hcl_block(text: str, start: int) -> str:
+    """The body of the {...} block whose opening brace is at or after `start`."""
+    i = text.index("{", start)
+    depth = 0
+    for j in range(i, len(text)):
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        if depth == 0:
+            return text[i + 1:j]
+    return text[i + 1:]
+
+
+def _hcl_attrs(body: str) -> dict[str, Any]:
+    """Top-level `name = "value"` and `name = [..]` attributes (nested blocks are skipped)."""
+    flat, depth, out = [], 0, {}
+    for ch in body:
+        depth += {"{": 1, "}": -1}.get(ch, 0)
+        flat.append(ch if depth == 0 or ch == "}" else " ")
+    for name, value, items in re.findall(r'(\w+)\s*=\s*(?:"([^"]*)"|\[([^\]]*)\])', "".join(flat)):
+        out[name] = re.findall(r'"([^"]*)"', items) if items else value
+    return out
+
+
+def terraform_backend(directory: str) -> dict[str, Any] | None:
+    """The backend of the Terraform code in `directory`: {"type": ..., settings...}, or None without code.
+    After `terraform init` the resolved settings (with -backend-config values) are read from .terraform/."""
+    tf_files = [os.path.join(directory, n) for n in sorted(os.listdir(directory)) if n.endswith(".tf")]
+    if not tf_files:
+        return None
+    init = os.path.join(directory, ".terraform", "terraform.tfstate")
+    if os.path.isfile(init):
+        try:
+            with open(init, encoding="utf-8") as fh:
+                backend = (json.load(fh) or {}).get("backend") or {}
+            if backend.get("type"):
+                return {"type": backend["type"], **(backend.get("config") or {})}
+        except (OSError, ValueError):
+            pass
+    code = ""
+    for path in tf_files:
+        with open(path, encoding="utf-8") as fh:
+            code += re.sub(r"(?m)^\s*(#|//).*$", "", fh.read()) + "\n"
+    # Only terraform {} blocks say where state lives.
+    text = "\n".join(_hcl_block(code, m.start()) for m in re.finditer(r'(?m)^\s*terraform\s*\{', code))
+    if (m := re.search(r'\bcloud\s*\{', text)):
+        body = _hcl_block(text, m.start())
+        ws = re.search(r'\bworkspaces\s*\{', body)
+        return {"type": "cloud", **_hcl_attrs(body), "workspaces": _hcl_attrs(_hcl_block(body, ws.start())) if ws else {}}
+    if (m := re.search(r'\bbackend\s+"([\w-]+)"\s*\{', text)):
+        body = _hcl_block(text, m.start())
+        ws = re.search(r'\bworkspaces\s*\{', body)
+        out = {"type": m.group(1), **_hcl_attrs(body)}
+        if ws:
+            out["workspaces"] = _hcl_attrs(_hcl_block(body, ws.start()))
+        return out
+    return {"type": "local"}
+
+
+def _local_state_files(directory: str, backend: dict[str, Any]) -> list[str]:
+    path = backend.get("path") or "terraform.tfstate"
+    base = os.path.join(directory, path)
+    files = [base] if os.path.isfile(base) else []
+    ws_dir = os.path.join(directory, backend.get("workspace_dir") or "terraform.tfstate.d")
+    if os.path.isdir(ws_dir):
+        files += sorted(os.path.join(ws_dir, ws, os.path.basename(path)) for ws in os.listdir(ws_dir)
+                        if os.path.isfile(os.path.join(ws_dir, ws, os.path.basename(path))))
+    return files
+
+
+def _s3_workspace_keys(s3: Any, backend: dict[str, Any]) -> list[str]:
+    """The default workspace's key and every other workspace's (<workspace_key_prefix>/<name>/<key>)."""
+    bucket, key = backend["bucket"], backend["key"]
+    prefix = (backend.get("workspace_key_prefix") or "env:").strip("/")
+    keys = [key]
+    for o in _paginate(s3, "list_objects_v2", "Contents", Bucket=bucket, Prefix=f"{prefix}/"):
+        rest = o["Key"][len(prefix) + 1:]
+        if "/" in rest and rest.split("/", 1)[1] == key:
+            keys.append(o["Key"])
+    return keys
+
+
+def _tfc_token(host: str) -> str:
+    env = os.environ.get("TF_TOKEN_" + re.sub(r"[.-]", "_", host)) or os.environ.get("TFE_TOKEN")
+    if env:
+        return env
+    path = os.path.expanduser("~/.terraform.d/credentials.tfrc.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return str(((json.load(fh) or {}).get("credentials") or {}).get(host, {}).get("token") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _tfc_get(url: str, token: str, opener=None) -> Any:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
+                                               "Content-Type": "application/vnd.api+json"})
+    with (opener or urllib.request.urlopen)(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+def tfc_states(backend: dict[str, Any], problems: list[str], opener=None) -> list[tuple[str, dict[str, Any]]]:
+    """Current state of each HCP Terraform / Terraform Enterprise workspace the code's cloud or remote block names."""
+    host = backend.get("hostname") or "app.terraform.io"
+    org = backend.get("organization") or os.environ.get("TF_CLOUD_ORGANIZATION") or ""
+    ws = backend.get("workspaces") or {}
+    token = _tfc_token(host)
+    if not org or not token:
+        raise RuntimeError(f"Reading state from {host} needs the organization and an API token "
+                           f"(TF_TOKEN_{re.sub(r'[.-]', '_', host)} or `terraform login`).")
+    api = f"https://{host}/api/v2"
+    from urllib.parse import quote
+    if ws.get("name"):
+        found = [_tfc_get(f"{api}/organizations/{quote(org)}/workspaces/{quote(ws['name'])}", token, opener)["data"]]
+    else:
+        query = (f"search[tags]={quote(','.join(ws['tags']))}" if ws.get("tags") else
+                 f"search[name]={quote(ws.get('prefix') or '')}")
+        found, page = [], 1
+        while page:
+            doc = _tfc_get(f"{api}/organizations/{quote(org)}/workspaces?page[size]=100&page[number]={page}&{query}",
+                           token, opener)
+            found += [w for w in doc.get("data") or []
+                      if not ws.get("prefix") or w["attributes"]["name"].startswith(ws["prefix"])]
+            page = ((doc.get("meta") or {}).get("pagination") or {}).get("next-page")
+    out = []
+    for w in found:
+        name = w["attributes"]["name"]
+        try:
+            version = _tfc_get(f"{api}/workspaces/{w['id']}/current-state-version", token, opener)["data"]
+            url = version["attributes"]["hosted-state-download-url"]
+            out.append((f"{host}/{org}/{name}", _tfc_get(url, token, opener)))
+        except Exception as exc:  # e.g. a workspace with no state yet
+            problems.append(f"state of workspace {org}/{name} could not be read ({_short_reason(str(exc))})")
+    return out
 
 
 def _which(name: str) -> bool:

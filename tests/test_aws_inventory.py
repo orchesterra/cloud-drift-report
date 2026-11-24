@@ -1,5 +1,6 @@
 import pytest
 import json
+import os
 import pytest
 import sys
 from pathlib import Path
@@ -868,3 +869,125 @@ def test_cli_goes_on_without_an_unreadable_state_but_not_without_all(tmp_path, m
     assert any("missing.tfstate could not be read" in p for p in doc["incomplete"])
     assert dr.main(["unmanaged", "--region", "us-east-1", "--state", str(tmp_path / "missing.tfstate")]) == 1
     assert "No --state could be read" in capsys.readouterr().err
+
+
+def test_backend_is_read_from_the_terraform_code(tmp_path):
+    (tmp_path / "main.tf").write_text('''
+# backend "local" {}   (a comment: ignored)
+resource "aws_sqs_queue" "q" { name = "q" }
+terraform {
+  required_version = ">= 1.5"
+  backend "s3" {
+    bucket = "tf-state"
+    key    = "app/terraform.tfstate"
+    region = "eu-west-1"
+  }
+}
+''')
+    assert inv.terraform_backend(str(tmp_path)) == {"type": "s3", "bucket": "tf-state", "key": "app/terraform.tfstate",
+                                                    "region": "eu-west-1"}
+    # After terraform init, the resolved settings (with -backend-config values) win.
+    (tmp_path / ".terraform").mkdir()
+    (tmp_path / ".terraform" / "terraform.tfstate").write_text(json.dumps(
+        {"backend": {"type": "s3", "config": {"bucket": "real", "key": "k.tfstate", "workspace_key_prefix": "ws"}}}))
+    assert inv.terraform_backend(str(tmp_path))["bucket"] == "real"
+    cloud = tmp_path / "cloud"
+    cloud.mkdir()
+    (cloud / "versions.tf").write_text('terraform {\n  cloud {\n    organization = "acme"\n'
+                                       '    workspaces {\n      tags = ["app", "prod"]\n    }\n  }\n}\n')
+    assert inv.terraform_backend(str(cloud)) == {"type": "cloud", "organization": "acme",
+                                                 "workspaces": {"tags": ["app", "prod"]}}
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "main.tf").write_text('resource "aws_sqs_queue" "q" {}\n')
+    assert inv.terraform_backend(str(plain)) == {"type": "local"}
+    assert inv.terraform_backend(str(tmp_path / "plain" / "..")) is not None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert inv.terraform_backend(str(empty)) is None
+
+
+def test_every_s3_workspace_is_read(tmp_path):
+    (tmp_path / "main.tf").write_text('terraform {\n  backend "s3" {\n    bucket = "b"\n    key = "app.tfstate"\n  }\n}\n')
+    bodies = {"app.tfstate": json.dumps(STATE).encode(), "env:/staging/app.tfstate": json.dumps(IDLE_STATE).encode()}
+
+    def get_object(region, Bucket, Key, **kw):
+        if Key == "env:/broken/app.tfstate":
+            raise RuntimeError("AccessDenied")
+
+        class _Body:
+            def read(self):
+                return bodies[Key]
+        return {"Body": _Body()}
+    s3 = {("s3", "list_objects_v2"): lambda region, Bucket, Prefix, **kw: {"Contents": [
+        {"Key": "env:/staging/app.tfstate"}, {"Key": "env:/broken/app.tfstate"}, {"Key": "env:/staging/other.tfstate"}]},
+          ("s3", "get_object"): get_object}
+    problems = []
+    docs = inv.read_state_source(str(tmp_path), FakeSession(s3), problems=problems)
+    assert [label for label, _ in docs] == ["s3://b/app.tfstate", "s3://b/env:/staging/app.tfstate"]
+    assert problems == ["state s3://b/env:/broken/app.tfstate could not be read (access denied)"]
+
+
+def test_local_state_and_its_workspaces(tmp_path):
+    (tmp_path / "main.tf").write_text('resource "aws_sqs_queue" "q" {}\n')
+    (tmp_path / "terraform.tfstate").write_text(json.dumps(STATE))
+    (tmp_path / "terraform.tfstate.d" / "dev").mkdir(parents=True)
+    (tmp_path / "terraform.tfstate.d" / "dev" / "terraform.tfstate").write_text(json.dumps(IDLE_STATE))
+    docs = inv.read_state_source(str(tmp_path))
+    assert [os.path.relpath(label, tmp_path) for label, _ in docs] == [
+        "terraform.tfstate", os.path.join("terraform.tfstate.d", "dev", "terraform.tfstate")]
+
+
+def test_terraform_cloud_workspaces_by_tag(monkeypatch):
+    monkeypatch.setenv("TF_TOKEN_app_terraform_io", "tok")
+    seen = []
+
+    class _Resp:
+        def __init__(self, doc):
+            self.doc = doc
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self.doc).encode()
+
+    def opener(req, timeout):
+        seen.append(req.full_url)
+        assert req.headers["Authorization"] == "Bearer tok"
+        url = req.full_url
+        if "/organizations/acme/workspaces?" in url:
+            assert "search[tags]=app%2Cprod" in url
+            return _Resp({"data": [{"id": "ws-1", "attributes": {"name": "app-prod"}},
+                                   {"id": "ws-2", "attributes": {"name": "app-new"}}], "meta": {"pagination": {}}})
+        if url.endswith("ws-1/current-state-version"):
+            return _Resp({"data": {"attributes": {"hosted-state-download-url": "https://archivist/x"}}})
+        if url.endswith("ws-2/current-state-version"):
+            raise RuntimeError("HTTP Error 404: Not Found")
+        if url == "https://archivist/x":
+            return _Resp(STATE)
+        raise AssertionError(url)
+    problems = []
+    docs = inv.tfc_states({"type": "cloud", "organization": "acme", "workspaces": {"tags": ["app", "prod"]}},
+                          problems, opener=opener)
+    assert [label for label, _ in docs] == ["app.terraform.io/acme/app-prod"]
+    assert problems == ["state of workspace acme/app-new could not be read (HTTP Error 404: Not Found)"]
+    monkeypatch.delenv("TF_TOKEN_app_terraform_io")
+    monkeypatch.setenv("HOME", "/nonexistent")
+    with pytest.raises(RuntimeError, match="needs the organization and an API token"):
+        inv.tfc_states({"type": "cloud", "organization": "acme", "workspaces": {"name": "x"}}, [])
+
+
+def test_no_state_flag_uses_the_terraform_code_here(tmp_path, monkeypatch, capsys):
+    (tmp_path / "main.tf").write_text('resource "aws_iam_role" "deploy" {}\n')
+    (tmp_path / "terraform.tfstate").write_text(json.dumps(STATE))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(AWS))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    dr.main(["unmanaged", "--region", "us-east-1", "-f", "json", "-o", "r.json"])
+    assert "reading the state of the Terraform code here (local backend" in capsys.readouterr().err
+    doc = json.loads((tmp_path / "r.json").read_text())
+    assert {f["address"] for f in doc["findings"]} == {"deploy", "clickops"}

@@ -971,6 +971,10 @@ def run_unmanaged(args, log=print) -> Report:
     sources: list[str] = []
     problems: list[str] = []
     unread = 0
+    if not args.state and (backend := inv_mod.terraform_backend(".")) is not None:
+        args.state = ["."]  # the Terraform code here says where its state is
+        log(f"note: no --state given; reading the state of the Terraform code here ({backend['type']} backend, "
+            "every workspace).", file=sys.stderr)
     for src in args.state:
         try:  # one unreadable source (or file in it) doesn't stop the others
             docs = read_state(src, base, session, inv_mod.read_state_source, problems)

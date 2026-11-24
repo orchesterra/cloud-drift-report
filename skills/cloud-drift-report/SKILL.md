@@ -51,9 +51,10 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
    - `DRIFT cloudformation --profile <profile> --region <region> [--stack NAME ...] --format md`.
      With no `--stack` it checks every top-level stack in the region. Each check can take a minute.
 4. Not in IaC:
-   - Ask where the Terraform state lives if it is not obvious (a local `.tfstate`, an S3 bucket/prefix,
-     or an initialised directory). Without `--state` only CloudFormation stacks count as IaC, so most
-     resources will show as not in IaC; say so.
+   - If the user is in a Terraform directory, `--state .` (or no `--state`) reads its backend and every
+     workspace (S3, local, HCP Terraform with `terraform login`). Otherwise ask where the state lives (a
+     `.tfstate`, an S3 bucket/prefix, a folder of state files). Outside Terraform code and without `--state`
+     only CloudFormation stacks count as IaC, so most resources will show as not in IaC; say so.
    - `DRIFT unmanaged --profile <profile> --region <region> --state s3://<bucket>/<prefix>/ --format md`
      (`--state` may repeat; `--all-regions` scans every enabled region; `--type s3` limits types).
      A region takes about 30-60 seconds.

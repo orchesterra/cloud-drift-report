@@ -18,6 +18,11 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
   longer stops the run; it is named in the incomplete-scan warning and the rest still count. The run stops only
   when no `--state` can be read at all. Empty state files are skipped, and a folder of `.tfstate` files (no
   `.tf` files) is read file by file.
+- State found from the Terraform code: `--state DIR` (or no `--state` when run in a Terraform directory) reads
+  the backend from the code or `.terraform/`, then every workspace: an S3 backend's default key and
+  `env:/<workspace>/` keys, local `terraform.tfstate` and `terraform.tfstate.d/`, or the HCP Terraform /
+  Terraform Enterprise workspaces a `cloud` block or `remote` backend names (by name, tags or prefix). No
+  `terraform init` is needed for these. Other backends still use `state pull`.
 
 ## [0.7.1] - 2026-11-24
 
