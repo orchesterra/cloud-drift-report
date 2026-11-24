@@ -5,6 +5,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
 ### Added
 - Incomplete-scan warning: when resource types can't be listed, CloudFormation stacks can't be listed or
   read, the account can't be identified, or a stack's drift check fails, the report starts with a warning
@@ -139,7 +141,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.5.0...v0.6.0
