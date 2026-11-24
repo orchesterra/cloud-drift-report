@@ -747,6 +747,31 @@ def _eks_children(kind):
     return _list
 
 
+_SCALING_NAMESPACES = ("ecs", "dynamodb", "rds", "elasticmapreduce", "ec2", "appstream", "sagemaker", "lambda",
+                       "cassandra", "kafka", "elasticache", "neptune", "comprehend", "custom-resource", "workspaces")
+
+
+def _scalable_targets(s, r):
+    # Cloud Control can't list these without a namespace; the ID is Cloud Control's
+    # (ResourceId|ScalableDimension|ServiceNamespace), so state and import IDs match as for other types.
+    aas = s.client("application-autoscaling", region_name=r)
+    out = []
+    for ns in _SCALING_NAMESPACES:
+        try:
+            targets = _paginate(aas, "describe_scalable_targets", "ScalableTargets", ServiceNamespace=ns)
+        except Exception as exc:
+            if "ValidationException" in f"{type(exc).__name__} {exc}":  # a namespace this region doesn't have
+                continue
+            raise
+        for t in targets:
+            out.append({"Identifier": f"{t['ResourceId']}|{t['ScalableDimension']}|{ns}",
+                        "Properties": {"ResourceId": t["ResourceId"], "Arn": t.get("ScalableTargetARN") or "",
+                                       # "orch-imp-table read capacity": what it scales, and which dimension
+                                       "Name": f"{t['ResourceId'].rsplit('/', 1)[-1]} "
+                                               f"{t['ScalableDimension'].rsplit(':', 1)[-1]}"}})
+    return out
+
+
 def _opensearch_domains(s, r):
     client = s.client("opensearch", region_name=r)
     return [{"Identifier": d["DomainName"], "Properties": {"DomainName": d["DomainName"]}}
@@ -786,6 +811,7 @@ NATIVE_LISTERS: dict[str, Callable[[Any, str], list[dict[str, Any]]]] = {
     "AWS::EC2::EIP": _elastic_ips,
     "AWS::EC2::Instance": _instances,
     "AWS::EC2::Volume": _volumes,
+    "AWS::ApplicationAutoScaling::ScalableTarget": _scalable_targets,
     "AWS::EC2::Snapshot": _snapshots,
     "AWS::EC2::VPCEndpoint": _vpc_endpoints,
     "AWS::S3::Bucket": _buckets,
@@ -1058,24 +1084,90 @@ def _short_reason(text: str) -> str:
 
 # --- import blocks -----------------------------------------------------------
 
-def _wafv2_import_id(ident: str) -> str:
-    name, _, rest = ident.partition("|")
-    acl_id, _, scope = rest.partition("|")
-    return f"{acl_id}/{name}/{scope}" if acl_id and scope else ""
+# Where the listed identifier isn't what Terraform imports by. Each was checked against the Import section of
+# the resource's page in the Terraform AWS provider docs (2026-11-24). (res, account) -> import ID, or "".
+
+def _parts(res: LiveResource, n: int) -> list[str]:
+    parts = res.identifier.split("|")
+    return parts if len(parts) == n and all(parts) else []
 
 
-# Terraform import IDs that differ from the listed identifier. Anything else with a "|" in it is a composite
-# Cloud Control key that Terraform won't take, so no ID is given for it.
-_IMPORT_IDS: dict[str, Callable[[str], str]] = {
-    "aws_wafv2_web_acl": _wafv2_import_id,
+def _wafv2(res: LiveResource, account: str) -> str:  # Cloud Control: Name|Id|Scope; Terraform: ID/NAME/SCOPE
+    p = _parts(res, 3)
+    return f"{p[1]}/{p[0]}/{p[2]}" if p else ""
+
+
+def _scalable_target(res: LiveResource, account: str) -> str:
+    # Cloud Control: ResourceId|ScalableDimension|ServiceNamespace; Terraform: namespace/resource-id/dimension
+    p = _parts(res, 3)
+    return f"{p[2]}/{p[0]}/{p[1]}" if p else ""
+
+
+def _arn_tail(marker: str) -> Callable[[LiveResource, str], str]:
+    """Terraform takes the name or ID that follows `marker` in the listed ARN."""
+    def convert(res: LiveResource, account: str) -> str:
+        arn = res.arn or res.identifier
+        return arn.split(marker, 1)[1] if marker in arn else ("" if arn.startswith("arn:") else res.identifier)
+    return convert
+
+
+def _arn_of(service: str, path: str) -> Callable[[LiveResource, str], str]:
+    """Terraform takes the ARN; build it from the name when the listing only gave the name."""
+    def convert(res: LiveResource, account: str) -> str:
+        if res.arn.startswith("arn:"):
+            return res.arn
+        if not account or not res.region:
+            return ""
+        return f"arn:aws:{service}:{res.region}:{account}:{path}{res.identifier}"
+    return convert
+
+
+def _account_name(res: LiveResource, account: str) -> str:
+    return f"{account}:{res.identifier}" if account else ""
+
+
+def _prop(*keys: str) -> Callable[[LiveResource, str], str]:
+    def convert(res: LiveResource, account: str) -> str:
+        return next((str(res.props[k]) for k in keys if res.props.get(k)), "")
+    return convert
+
+
+_IMPORT_IDS: dict[str, Callable[[LiveResource, str], str]] = {
+    **{t: _wafv2 for t in ("aws_wafv2_web_acl", "aws_wafv2_ip_set", "aws_wafv2_regex_pattern_set",
+                           "aws_wafv2_rule_group")},
+    "aws_appautoscaling_target": _scalable_target,
+    # FilterName|LogGroupName -> "group|filter"
+    "aws_cloudwatch_log_subscription_filter": lambda res, account: "|".join(reversed(_parts(res, 2))),
+    # app|child (this tool's listing) -> "child:app"
+    **{t: (lambda res, account: ":".join(reversed(_parts(res, 2))))
+       for t in ("aws_appconfig_environment", "aws_appconfig_configuration_profile")},
+    # service ARN -> "cluster/service"
+    "aws_ecs_service": lambda res, account: "/".join((res.props.get("_aliases") or [[]])[0][:2])
+    if len((res.props.get("_aliases") or [[]])[0]) >= 2 else "",
+    "aws_kinesis_firehose_delivery_stream": _arn_of("firehose", "deliverystream/"),
+    "aws_cloudtrail": _arn_of("cloudtrail", "trail/"),
+    "aws_kinesisanalyticsv2_application": _arn_of("kinesisanalytics", "application/"),
+    "aws_cloudwatch_query_definition": _arn_of("logs", "query-definition:"),
+    "aws_budgets_budget": _account_name,
+    "aws_s3_access_point": _account_name,
+    "aws_appsync_graphql_api": _arn_tail(":apis/"),
+    "aws_batch_compute_environment": _arn_tail(":compute-environment/"),
+    "aws_cloudfront_function": _arn_tail(":function/"),
+    "aws_sagemaker_notebook_instance": _arn_tail(":notebook-instance/"),
+    "aws_transfer_server": _arn_tail(":server/"),
+    "aws_xray_sampling_rule": _arn_tail(":sampling-rule/"),
+    "aws_dms_replication_instance": _prop("ReplicationInstanceIdentifier"),
+    "aws_codecommit_repository": _prop("RepositoryName", "Name"),
+    "aws_scheduler_schedule": lambda res, account: f"{res.props.get('GroupName') or 'default'}/{res.identifier}",
 }
 
 
-def import_id(res: LiveResource) -> str:
-    """The ID `terraform import` / an `import {}` block takes for this resource, or "" when not known."""
+def import_id(res: LiveResource, account: str = "") -> str:
+    """The ID `terraform import` / an `import {}` block takes for this resource, or "" when not known.
+    Anything else with a "|" in it is a composite Cloud Control key Terraform won't take."""
     convert = _IMPORT_IDS.get(res.tf_type)
     if convert:
-        return convert(res.identifier)
+        return convert(res, account)
     return "" if "|" in res.identifier else res.identifier
 
 

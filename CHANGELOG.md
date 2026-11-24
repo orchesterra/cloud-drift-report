@@ -13,7 +13,12 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
   Volumes and load balancers younger than 7 days aren't judged. Prices are live per region.
 - Import blocks: `-o imports.tf` (or `-f imports`) writes a Terraform `import {}` block for every resource not
   in IaC, grouped by region, ready for `terraform plan -generate-config-out=generated.tf`. Blocks whose import ID
-  isn't known are commented out with a note. JSON findings carry `import_id`.
+  isn't known are commented out with a note. JSON findings carry `import_id`. IDs follow each resource's
+  Import section in the Terraform AWS provider docs: WAFv2 `ID/NAME/SCOPE`, Application Auto Scaling
+  `namespace/resource-id/dimension`, ECS services `cluster/service`, ARNs for Firehose, CloudTrail and Kinesis
+  Analytics, `account:name` for budgets and S3 access points, names for ARN-listed types such as CloudFront
+  functions and Batch compute environments.
+- Application Auto Scaling targets are listed (Cloud Control can't list them without a namespace).
 - Many state files in one run: a `--state` source or a file under an S3 prefix that can't be read or parsed no
   longer stops the run; it is named in the incomplete-scan warning and the rest still count. The run stops only
   when no `--state` can be read at all. Empty state files are skipped, and a folder of `.tfstate` files (no

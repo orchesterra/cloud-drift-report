@@ -1038,7 +1038,7 @@ def run_unmanaged(args, log=print) -> Report:
         f = finalize(Finding(
             source="aws", location=res.region or "global", address=res.name or res.identifier, type=res.tf_type,
             action=UNMANAGED, physical_id=res.arn or res.identifier, tags=inv_mod._tag_map(res.props.get("Tags")),
-            import_id=inv_mod.import_id(res)))
+            import_id=inv_mod.import_id(res, account)))
         if id(res) in owned:
             f.severity = "low"
             f.explanation = f"AWS created this ({owned[id(res)]}); shown because of --strict."

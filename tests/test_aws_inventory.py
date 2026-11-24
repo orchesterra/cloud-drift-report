@@ -991,3 +991,61 @@ def test_no_state_flag_uses_the_terraform_code_here(tmp_path, monkeypatch, capsy
     assert "reading the state of the Terraform code here (local backend" in capsys.readouterr().err
     doc = json.loads((tmp_path / "r.json").read_text())
     assert {f["address"] for f in doc["findings"]} == {"deploy", "clickops"}
+
+
+def test_import_ids_match_terraform_docs():
+    acct = "123456789012"
+
+    def live(tf, ident, region="us-east-1", arn="", **props):
+        known = tf in inv.CLOUDCONTROL_TO_TERRAFORM.values()
+        res = _live(tf, ident, cc_type="" if known else "AWS::Some::New", **props)
+        res.region, res.arn = region, arn
+        return res
+    cases = [
+        (live("aws_wafv2_ip_set", "ips|a1b2|REGIONAL"), "a1b2/ips/REGIONAL"),
+        (live("aws_wafv2_rule_group", "rg|c3d4|CLOUDFRONT"), "c3d4/rg/CLOUDFRONT"),
+        (live("aws_appautoscaling_target", "service/main/web|ecs:service:DesiredCount|ecs"),
+         "ecs/service/main/web/ecs:service:DesiredCount"),
+        (live("aws_cloudwatch_log_subscription_filter", "to-es|/app/api"), "/app/api|to-es"),
+        (live("aws_appconfig_environment", "71abcde|11xxxxx"), "11xxxxx:71abcde"),
+        (live("aws_ecs_service", "arn:aws:ecs:us-east-1:1:service/main/web", _aliases=[["main", "web"]]), "main/web"),
+        (live("aws_kinesis_firehose_delivery_stream", "logs"), f"arn:aws:firehose:us-east-1:{acct}:deliverystream/logs"),
+        (live("aws_cloudtrail", "org-trail", arn="arn:aws:cloudtrail:us-east-1:1:trail/org-trail"),
+         "arn:aws:cloudtrail:us-east-1:1:trail/org-trail"),
+        (live("aws_cloudtrail", "org-trail"), f"arn:aws:cloudtrail:us-east-1:{acct}:trail/org-trail"),
+        (live("aws_budgets_budget", "monthly"), f"{acct}:monthly"),
+        (live("aws_s3_access_point", "ap1"), f"{acct}:ap1"),
+        (live("aws_appsync_graphql_api", "arn:aws:appsync:us-east-1:1:apis/abc123"), "abc123"),
+        (live("aws_batch_compute_environment", "arn:aws:batch:us-east-1:1:compute-environment/sample"), "sample"),
+        (live("aws_cloudfront_function", "arn:aws:cloudfront::1:function/rewrite"), "rewrite"),
+        (live("aws_sagemaker_notebook_instance", "arn:aws:sagemaker:us-east-1:1:notebook-instance/nb"), "nb"),
+        (live("aws_transfer_server", "arn:aws:transfer:us-east-1:1:server/s-123"), "s-123"),
+        (live("aws_xray_sampling_rule", "arn:aws:xray:us-east-1:1:sampling-rule/rule1"), "rule1"),
+        (live("aws_dms_replication_instance", "arn:aws:dms:us-east-1:1:rep:XYZ", ReplicationInstanceIdentifier="dms1"), "dms1"),
+        (live("aws_dms_replication_instance", "arn:aws:dms:us-east-1:1:rep:XYZ"), ""),  # name not listed: not guessed
+        (live("aws_codecommit_repository", "uuid-1", RepositoryName="app"), "app"),
+        (live("aws_scheduler_schedule", "nightly", GroupName="ops"), "ops/nightly"),
+        (live("aws_scheduler_schedule", "nightly"), "default/nightly"),
+        (live("aws_sqs_queue", "https://sqs.us-east-1.amazonaws.com/1/q"), "https://sqs.us-east-1.amazonaws.com/1/q"),
+        (live("aws_eks_node_group", "main:workers"), "main:workers"),
+        (live("aws_some_new_type", "a|b"), ""),
+    ]
+    for res, expected in cases:
+        assert inv.import_id(res, acct) == expected, res.tf_type
+    assert inv.import_id(live("aws_budgets_budget", "monthly")) == ""  # account unknown: not guessed
+
+
+def test_scalable_targets_are_listed_per_namespace():
+    def describe(region, ServiceNamespace, **kw):
+        if ServiceNamespace == "workspaces":
+            raise RuntimeError("ValidationException: namespace not supported in this region")
+        rows = {"dynamodb": [{"ResourceId": "table/orders", "ScalableDimension": "dynamodb:table:ReadCapacityUnits"}],
+                "ecs": [{"ResourceId": "service/main/web", "ScalableDimension": "ecs:service:DesiredCount"}]}
+        return {"ScalableTargets": rows.get(ServiceNamespace, [])}
+    rows = inv._scalable_targets(FakeSession({("application-autoscaling", "describe_scalable_targets"): describe}),
+                                 "us-east-1")
+    found = {r["Identifier"]: r["Properties"]["Name"] for r in rows}
+    assert found == {"service/main/web|ecs:service:DesiredCount|ecs": "web DesiredCount",
+                     "table/orders|dynamodb:table:ReadCapacityUnits|dynamodb": "orders ReadCapacityUnits"}
+    res = _live("aws_appautoscaling_target", "table/orders|dynamodb:table:ReadCapacityUnits|dynamodb")
+    assert inv.import_id(res) == "dynamodb/table/orders/dynamodb:table:ReadCapacityUnits"
