@@ -1,5 +1,6 @@
 import pytest
 import json
+import os
 import pytest
 import sys
 from pathlib import Path
@@ -700,3 +701,351 @@ def test_disabled_or_unknown_region_stops_before_the_scan():
     notes = []
     inv.check_regions(FakeSession({}), ["me-south-1"], log=lambda m, **k: notes.append(m))  # can't check: scan as asked
     assert notes and notes[0].startswith("note: could not check which regions are enabled")
+
+
+def _days_ago(n):
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone.utc) - timedelta(days=n)
+
+
+IDLE_MORE = {
+    ("ec2", "describe_volumes"): {"Volumes": [
+        {"VolumeId": "vol-spare", "State": "available", "Size": 100, "VolumeType": "gp3", "CreateTime": _days_ago(40)},
+        {"VolumeId": "vol-new", "State": "available", "Size": 100, "VolumeType": "gp3", "CreateTime": _days_ago(1)},
+        {"VolumeId": "vol-used", "State": "in-use", "Size": 8, "VolumeType": "gp3", "CreateTime": _days_ago(40),
+         "Attachments": [{"InstanceId": "i-1", "DeleteOnTermination": False}]}]},
+    ("ec2", "describe_snapshots"): lambda region, OwnerIds, **kw: {"Snapshots": [
+        {"SnapshotId": "snap-orphan", "VolumeId": "vol-deleted", "VolumeSize": 50, "StartTime": _days_ago(200),
+         "FullSnapshotSizeInBytes": 20 * 2**30},
+        {"SnapshotId": "snap-ami", "VolumeId": "vol-deleted", "VolumeSize": 8, "StartTime": _days_ago(200)},
+        {"SnapshotId": "snap-live-vol", "VolumeId": "vol-used", "VolumeSize": 8, "StartTime": _days_ago(200)},
+        {"SnapshotId": "snap-backup", "VolumeId": "vol-gone", "VolumeSize": 8, "StartTime": _days_ago(200),
+         "Tags": [{"Key": "aws:backup:source-resource", "Value": "x"}]},
+        {"SnapshotId": "snap-recent", "VolumeId": "vol-gone", "VolumeSize": 8, "StartTime": _days_ago(10)},
+        {"SnapshotId": "snap-archived", "VolumeId": "vol-gone", "VolumeSize": 8, "StartTime": _days_ago(200),
+         "StorageTier": "archive"}]},
+    ("ec2", "describe_images"): lambda region, Owners, **kw: {"Images": [
+        {"ImageId": "ami-1", "BlockDeviceMappings": [{"Ebs": {"SnapshotId": "snap-ami"}}]}]},
+    ("elbv2", "describe_load_balancers"): {"LoadBalancers": [
+        {"LoadBalancerArn": "arn:lb/app/empty", "LoadBalancerName": "empty", "Type": "application", "CreatedTime": _days_ago(30)},
+        {"LoadBalancerArn": "arn:lb/app/redirect", "LoadBalancerName": "redirect", "Type": "application", "CreatedTime": _days_ago(30)},
+        {"LoadBalancerArn": "arn:lb/net/busy", "LoadBalancerName": "busy", "Type": "network", "CreatedTime": _days_ago(30)}]},
+    ("elbv2", "describe_tags"): {"TagDescriptions": []},
+    ("elbv2", "describe_listeners"): lambda region, LoadBalancerArn, **kw: {"Listeners": [
+        {"ListenerArn": "l"}] if LoadBalancerArn != "arn:lb/app/empty" else []},
+    ("elbv2", "describe_target_groups"): {"TargetGroups": [
+        {"TargetGroupArn": "tg-busy", "LoadBalancerArns": ["arn:lb/net/busy"]},
+        {"TargetGroupArn": "tg-empty", "LoadBalancerArns": ["arn:lb/app/redirect"]}]},
+    ("elbv2", "describe_target_health"): lambda region, TargetGroupArn, **kw: {"TargetHealthDescriptions": [
+        {"Target": {"Id": "i-1"}}] if TargetGroupArn == "tg-busy" else []},
+    ("elb", "describe_load_balancers"): {"LoadBalancerDescriptions": [
+        {"LoadBalancerName": "old-clb", "Instances": [], "CreatedTime": _days_ago(400)},
+        {"LoadBalancerName": "live-clb", "Instances": [{"InstanceId": "i-1"}], "CreatedTime": _days_ago(400)}]},
+}
+
+
+def test_unattached_volume_empty_load_balancer_and_abandoned_snapshot():
+    vols = {r["Identifier"]: _live("aws_ebs_volume", r["Identifier"], **r["Properties"])
+            for r in inv._volumes(FakeSession(IDLE_MORE), "us-east-1")}
+    assert inv.idle_reason(vols["vol-spare"]) == ("attached to nothing; this 100 GB gp3 volume still bills about "
+                                                  "$8.00/month for storage (us-east-1 list price used where the live "
+                                                  "us-east-1 price could not be read)")
+    assert inv.idle_reason(vols["vol-new"]) == "" and inv.idle_reason(vols["vol-used"]) == ""
+
+    lbs = {r["Properties"]["LoadBalancerName"]: _live("aws_lb", r["Identifier"], **r["Properties"])
+           for r in inv._load_balancers(FakeSession(IDLE_MORE), "us-east-1")}
+    assert inv.idle_reason(lbs["empty"]).startswith("no listeners and no registered targets; a load balancer still "
+                                                    "bills about $16.43/month")
+    assert inv.idle_reason(lbs["redirect"]).startswith("it has 1 listener but no registered targets, so it can only "
+                                                       "redirect or return fixed responses")
+    assert inv.idle_reason(lbs["busy"]) == ""
+    assert (inv.idle_label(lbs["empty"]), inv.idle_label(lbs["redirect"])) == ("idle", "probably unused")
+
+    clbs = {r["Identifier"]: _live("aws_elb", r["Identifier"], **r["Properties"])
+            for r in inv._classic_elbs(FakeSession(IDLE_MORE), "us-east-1")}
+    assert "$18.25/month" in inv.idle_reason(clbs["old-clb"]) and inv.idle_reason(clbs["live-clb"]) == ""
+
+    snaps = inv._snapshots(FakeSession(IDLE_MORE), "us-east-1")
+    assert [r["Identifier"] for r in snaps] == ["snap-orphan"]  # AMI, live volume, Backup, recent, archived: kept out
+    snap = _live("aws_ebs_snapshot", "snap-orphan", **snaps[0]["Properties"])
+    assert inv.idle_reason(snap).startswith("200 days old, its volume vol-deleted is gone and no AMI uses it; it bills "
+                                            "up to about $1.00/month for 20 GB")
+    assert inv.idle_label(snap) == "probably abandoned"
+
+
+def test_load_balancer_usage_unreadable_says_nothing():
+    data = dict(IDLE_MORE)
+    data[("elbv2", "describe_listeners")] = _denied
+    lbs = inv._load_balancers(FakeSession(data), "us-east-1")
+    assert all("Targets" not in r["Properties"] for r in lbs)
+    assert all(inv.idle_reason(_live("aws_lb", r["Identifier"], **r["Properties"])) == "" for r in lbs)
+
+
+def test_ebs_and_load_balancer_prices_are_read_per_region():
+    def products(region, ServiceCode, Filters, **kw):
+        where = {f["Field"]: f["Value"] for f in Filters}
+        assert where["regionCode"] == "ap-south-1"
+        if ServiceCode == "AWSELB":
+            return {"PriceList": [_price("APS3-Outposts-LoadBalancerUsage", "1"), _price("APS3-LoadBalancerUsage", "0.0239")]}
+        return {"PriceList": [_price("APS3-EBS:VolumeUsage.gp3", "0.0912")]}
+    prices = inv.Prices(FakeSession({("pricing", "get_products"): products}))
+    assert prices.rate("ebs:gp3", "ap-south-1") == (0.0912, True)
+    assert prices.rate("alb", "ap-south-1") == (0.0239, True)
+
+
+def test_import_blocks_for_resources_not_in_iac(tmp_path, monkeypatch):
+    waf = _live("aws_wafv2_web_acl", "edge|a1b2|REGIONAL")
+    assert inv.import_id(waf) == "a1b2/edge/REGIONAL"
+    assert inv.import_id(_live("aws_ecs_service", "arn:svc|arn:cluster")) == ""  # composite: not guessed
+    assert inv.import_id(_live("aws_iam_role", "deploy")) == "deploy"
+
+    state_file = tmp_path / "prod.tfstate"
+    state_file.write_text(json.dumps(STATE))
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(AWS))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    out = tmp_path / "imports.tf"
+    dr.main(["unmanaged", "--region", "us-east-1", "--state", str(state_file), "-o", str(out)])
+    text = out.read_text()
+    assert "terraform plan -generate-config-out=generated.tf" in text
+    assert 'import {\n  to = aws_iam_role.deploy\n  id = "deploy"\n}' in text
+    assert "to = aws_sqs_queue.clickops" in text
+    assert "# --- us-east-1 ---" in text
+    report = dr.Report([dr.Finding(source="aws", location="us-east-1", address="svc", type="aws_ecs_service",
+                                   action=dr.UNMANAGED, physical_id="arn:svc|arn:cluster")], "aws", "x")
+    commented = dr.render_imports(report)
+    assert "# aws_ecs_service svc: import ID not known" in commented and "# import {" in commented
+    assert "\nimport {" not in commented
+    taken = set()
+    assert [dr._tf_name(n, taken) for n in ("web-app", "web.app", "9lives", "arn:aws:sns:us-east-1:1:Alerts")] == \
+        ["web_app", "web_app_2", "r_9lives", "alerts"]
+
+
+def test_one_unreadable_state_file_does_not_stop_the_others(tmp_path):
+    good = json.dumps(STATE).encode()
+
+    def get_object(region, Bucket, Key, **kw):
+        if Key.endswith("denied.tfstate"):
+            raise RuntimeError("AccessDenied: s3:GetObject")
+        body = {"env/prod.tfstate": good, "env/broken.tfstate": b"{not json", "env/empty.tfstate": b""}[Key]
+
+        class _Body:
+            def read(self):
+                return body
+        return {"Body": _Body()}
+    keys = ["env/prod.tfstate", "env/broken.tfstate", "env/empty.tfstate", "env/denied.tfstate", "env/notes.txt"]
+    s3 = {("s3", "list_objects_v2"): {"Contents": [{"Key": k} for k in keys]}, ("s3", "get_object"): get_object}
+    problems = []
+    docs = inv.read_state_source("s3://b/env/", FakeSession(s3), problems=problems)
+    assert [label for label, _ in docs] == ["s3://b/env/prod.tfstate"]
+    assert problems == ["state s3://b/env/broken.tfstate could not be read (not JSON: Expecting property name "
+                        "enclosed in double quotes: line 1 column 2 (char 1))",
+                        "state s3://b/env/denied.tfstate could not be read (access denied)"]
+    # Every object denied: raise, so the caller can try the assumed role.
+    only_denied = {**s3, ("s3", "list_objects_v2"): {"Contents": [{"Key": "a/denied.tfstate"}, {"Key": "b/denied.tfstate"}]}}
+    with pytest.raises(RuntimeError, match="AccessDenied"):
+        inv.read_state_source("s3://b/", FakeSession(only_denied), problems=[])
+
+    folder = tmp_path / "states"
+    (folder / "eu").mkdir(parents=True)
+    (folder / "eu" / "app.tfstate").write_text(json.dumps(STATE))
+    (folder / "old.tfstate").write_text(json.dumps({"version": 3, "modules": []}))
+    problems = []
+    docs = inv.read_state_source(str(folder), problems=problems)
+    assert [label for label, _ in docs] == [str(folder / "eu" / "app.tfstate")]
+    assert "old state format" in problems[0]
+
+
+def test_cli_goes_on_without_an_unreadable_state_but_not_without_all(tmp_path, monkeypatch, capsys):
+    state_file = tmp_path / "prod.tfstate"
+    state_file.write_text(json.dumps(STATE))
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(AWS))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    out = tmp_path / "r.json"
+    code = dr.main(["unmanaged", "--region", "us-east-1", "--state", str(state_file), "--state",
+                    str(tmp_path / "missing.tfstate"), "-f", "json", "-o", str(out)])
+    assert code == 0
+    doc = json.loads(out.read_text())
+    assert {f["address"] for f in doc["findings"]} == {"deploy", "clickops"}  # prod.tfstate still counted
+    assert any("missing.tfstate could not be read" in p for p in doc["incomplete"])
+    assert dr.main(["unmanaged", "--region", "us-east-1", "--state", str(tmp_path / "missing.tfstate")]) == 1
+    assert "No --state could be read" in capsys.readouterr().err
+
+
+def test_backend_is_read_from_the_terraform_code(tmp_path):
+    (tmp_path / "main.tf").write_text('''
+# backend "local" {}   (a comment: ignored)
+resource "aws_sqs_queue" "q" { name = "q" }
+terraform {
+  required_version = ">= 1.5"
+  backend "s3" {
+    bucket = "tf-state"
+    key    = "app/terraform.tfstate"
+    region = "eu-west-1"
+  }
+}
+''')
+    assert inv.terraform_backend(str(tmp_path)) == {"type": "s3", "bucket": "tf-state", "key": "app/terraform.tfstate",
+                                                    "region": "eu-west-1"}
+    # After terraform init, the resolved settings (with -backend-config values) win.
+    (tmp_path / ".terraform").mkdir()
+    (tmp_path / ".terraform" / "terraform.tfstate").write_text(json.dumps(
+        {"backend": {"type": "s3", "config": {"bucket": "real", "key": "k.tfstate", "workspace_key_prefix": "ws"}}}))
+    assert inv.terraform_backend(str(tmp_path))["bucket"] == "real"
+    cloud = tmp_path / "cloud"
+    cloud.mkdir()
+    (cloud / "versions.tf").write_text('terraform {\n  cloud {\n    organization = "acme"\n'
+                                       '    workspaces {\n      tags = ["app", "prod"]\n    }\n  }\n}\n')
+    assert inv.terraform_backend(str(cloud)) == {"type": "cloud", "organization": "acme",
+                                                 "workspaces": {"tags": ["app", "prod"]}}
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "main.tf").write_text('resource "aws_sqs_queue" "q" {}\n')
+    assert inv.terraform_backend(str(plain)) == {"type": "local"}
+    assert inv.terraform_backend(str(tmp_path / "plain" / "..")) is not None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert inv.terraform_backend(str(empty)) is None
+
+
+def test_every_s3_workspace_is_read(tmp_path):
+    (tmp_path / "main.tf").write_text('terraform {\n  backend "s3" {\n    bucket = "b"\n    key = "app.tfstate"\n  }\n}\n')
+    bodies = {"app.tfstate": json.dumps(STATE).encode(), "env:/staging/app.tfstate": json.dumps(IDLE_STATE).encode()}
+
+    def get_object(region, Bucket, Key, **kw):
+        if Key == "env:/broken/app.tfstate":
+            raise RuntimeError("AccessDenied")
+
+        class _Body:
+            def read(self):
+                return bodies[Key]
+        return {"Body": _Body()}
+    s3 = {("s3", "list_objects_v2"): lambda region, Bucket, Prefix, **kw: {"Contents": [
+        {"Key": "env:/staging/app.tfstate"}, {"Key": "env:/broken/app.tfstate"}, {"Key": "env:/staging/other.tfstate"}]},
+          ("s3", "get_object"): get_object}
+    problems = []
+    docs = inv.read_state_source(str(tmp_path), FakeSession(s3), problems=problems)
+    assert [label for label, _ in docs] == ["s3://b/app.tfstate", "s3://b/env:/staging/app.tfstate"]
+    assert problems == ["state s3://b/env:/broken/app.tfstate could not be read (access denied)"]
+
+
+def test_local_state_and_its_workspaces(tmp_path):
+    (tmp_path / "main.tf").write_text('resource "aws_sqs_queue" "q" {}\n')
+    (tmp_path / "terraform.tfstate").write_text(json.dumps(STATE))
+    (tmp_path / "terraform.tfstate.d" / "dev").mkdir(parents=True)
+    (tmp_path / "terraform.tfstate.d" / "dev" / "terraform.tfstate").write_text(json.dumps(IDLE_STATE))
+    docs = inv.read_state_source(str(tmp_path))
+    assert [os.path.relpath(label, tmp_path) for label, _ in docs] == [
+        "terraform.tfstate", os.path.join("terraform.tfstate.d", "dev", "terraform.tfstate")]
+
+
+def test_terraform_cloud_workspaces_by_tag(monkeypatch):
+    monkeypatch.setenv("TF_TOKEN_app_terraform_io", "tok")
+    seen = []
+
+    class _Resp:
+        def __init__(self, doc):
+            self.doc = doc
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self.doc).encode()
+
+    def opener(req, timeout):
+        seen.append(req.full_url)
+        assert req.headers["Authorization"] == "Bearer tok"
+        url = req.full_url
+        if "/organizations/acme/workspaces?" in url:
+            assert "search[tags]=app%2Cprod" in url
+            return _Resp({"data": [{"id": "ws-1", "attributes": {"name": "app-prod"}},
+                                   {"id": "ws-2", "attributes": {"name": "app-new"}}], "meta": {"pagination": {}}})
+        if url.endswith("ws-1/current-state-version"):
+            return _Resp({"data": {"attributes": {"hosted-state-download-url": "https://archivist/x"}}})
+        if url.endswith("ws-2/current-state-version"):
+            raise RuntimeError("HTTP Error 404: Not Found")
+        if url == "https://archivist/x":
+            return _Resp(STATE)
+        raise AssertionError(url)
+    problems = []
+    docs = inv.tfc_states({"type": "cloud", "organization": "acme", "workspaces": {"tags": ["app", "prod"]}},
+                          problems, opener=opener)
+    assert [label for label, _ in docs] == ["app.terraform.io/acme/app-prod"]
+    assert problems == ["state of workspace acme/app-new could not be read (HTTP Error 404: Not Found)"]
+    monkeypatch.delenv("TF_TOKEN_app_terraform_io")
+    monkeypatch.setenv("HOME", "/nonexistent")
+    with pytest.raises(RuntimeError, match="needs the organization and an API token"):
+        inv.tfc_states({"type": "cloud", "organization": "acme", "workspaces": {"name": "x"}}, [])
+
+
+def test_no_state_flag_uses_the_terraform_code_here(tmp_path, monkeypatch, capsys):
+    (tmp_path / "main.tf").write_text('resource "aws_iam_role" "deploy" {}\n')
+    (tmp_path / "terraform.tfstate").write_text(json.dumps(STATE))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dr, "aws_session", lambda profile, region: FakeSession(AWS))
+    monkeypatch.setattr(inv, "CLOUDCONTROL_TO_TERRAFORM", {t: inv.CLOUDCONTROL_TO_TERRAFORM[t] for t in TYPES})
+    dr.main(["unmanaged", "--region", "us-east-1", "-f", "json", "-o", "r.json"])
+    assert "reading the state of the Terraform code here (local backend" in capsys.readouterr().err
+    doc = json.loads((tmp_path / "r.json").read_text())
+    assert {f["address"] for f in doc["findings"]} == {"deploy", "clickops"}
+
+
+def test_import_ids_match_terraform_docs():
+    acct = "123456789012"
+
+    def live(tf, ident, region="us-east-1", arn="", **props):
+        known = tf in inv.CLOUDCONTROL_TO_TERRAFORM.values()
+        res = _live(tf, ident, cc_type="" if known else "AWS::Some::New", **props)
+        res.region, res.arn = region, arn
+        return res
+    cases = [
+        (live("aws_wafv2_ip_set", "ips|a1b2|REGIONAL"), "a1b2/ips/REGIONAL"),
+        (live("aws_wafv2_rule_group", "rg|c3d4|CLOUDFRONT"), "c3d4/rg/CLOUDFRONT"),
+        (live("aws_appautoscaling_target", "service/main/web|ecs:service:DesiredCount|ecs"),
+         "ecs/service/main/web/ecs:service:DesiredCount"),
+        (live("aws_cloudwatch_log_subscription_filter", "to-es|/app/api"), "/app/api|to-es"),
+        (live("aws_appconfig_environment", "71abcde|11xxxxx"), "11xxxxx:71abcde"),
+        (live("aws_ecs_service", "arn:aws:ecs:us-east-1:1:service/main/web", _aliases=[["main", "web"]]), "main/web"),
+        (live("aws_kinesis_firehose_delivery_stream", "logs"), f"arn:aws:firehose:us-east-1:{acct}:deliverystream/logs"),
+        (live("aws_cloudtrail", "org-trail", arn="arn:aws:cloudtrail:us-east-1:1:trail/org-trail"),
+         "arn:aws:cloudtrail:us-east-1:1:trail/org-trail"),
+        (live("aws_cloudtrail", "org-trail"), f"arn:aws:cloudtrail:us-east-1:{acct}:trail/org-trail"),
+        (live("aws_budgets_budget", "monthly"), f"{acct}:monthly"),
+        (live("aws_s3_access_point", "ap1"), f"{acct}:ap1"),
+        (live("aws_appsync_graphql_api", "arn:aws:appsync:us-east-1:1:apis/abc123"), "abc123"),
+        (live("aws_batch_compute_environment", "arn:aws:batch:us-east-1:1:compute-environment/sample"), "sample"),
+        (live("aws_cloudfront_function", "arn:aws:cloudfront::1:function/rewrite"), "rewrite"),
+        (live("aws_sagemaker_notebook_instance", "arn:aws:sagemaker:us-east-1:1:notebook-instance/nb"), "nb"),
+        (live("aws_transfer_server", "arn:aws:transfer:us-east-1:1:server/s-123"), "s-123"),
+        (live("aws_xray_sampling_rule", "arn:aws:xray:us-east-1:1:sampling-rule/rule1"), "rule1"),
+        (live("aws_dms_replication_instance", "arn:aws:dms:us-east-1:1:rep:XYZ", ReplicationInstanceIdentifier="dms1"), "dms1"),
+        (live("aws_dms_replication_instance", "arn:aws:dms:us-east-1:1:rep:XYZ"), ""),  # name not listed: not guessed
+        (live("aws_codecommit_repository", "uuid-1", RepositoryName="app"), "app"),
+        (live("aws_scheduler_schedule", "nightly", GroupName="ops"), "ops/nightly"),
+        (live("aws_scheduler_schedule", "nightly"), "default/nightly"),
+        (live("aws_sqs_queue", "https://sqs.us-east-1.amazonaws.com/1/q"), "https://sqs.us-east-1.amazonaws.com/1/q"),
+        (live("aws_eks_node_group", "main:workers"), "main:workers"),
+        (live("aws_some_new_type", "a|b"), ""),
+    ]
+    for res, expected in cases:
+        assert inv.import_id(res, acct) == expected, res.tf_type
+    assert inv.import_id(live("aws_budgets_budget", "monthly")) == ""  # account unknown: not guessed
+
+
+def test_scalable_targets_are_listed_per_namespace():
+    def describe(region, ServiceNamespace, **kw):
+        if ServiceNamespace == "workspaces":
+            raise RuntimeError("ValidationException: namespace not supported in this region")
+        rows = {"dynamodb": [{"ResourceId": "table/orders", "ScalableDimension": "dynamodb:table:ReadCapacityUnits"}],
+                "ecs": [{"ResourceId": "service/main/web", "ScalableDimension": "ecs:service:DesiredCount"}]}
+        return {"ScalableTargets": rows.get(ServiceNamespace, [])}
+    rows = inv._scalable_targets(FakeSession({("application-autoscaling", "describe_scalable_targets"): describe}),
+                                 "us-east-1")
+    found = {r["Identifier"]: r["Properties"]["Name"] for r in rows}
+    assert found == {"service/main/web|ecs:service:DesiredCount|ecs": "web DesiredCount",
+                     "table/orders|dynamodb:table:ReadCapacityUnits|dynamodb": "orders ReadCapacityUnits"}
+    res = _live("aws_appautoscaling_target", "table/orders|dynamodb:table:ReadCapacityUnits|dynamodb")
+    assert inv.import_id(res) == "dynamodb/table/orders/dynamodb:table:ReadCapacityUnits"

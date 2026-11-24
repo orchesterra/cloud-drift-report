@@ -40,6 +40,7 @@ CLOUDCONTROL_TO_TERRAFORM: dict[str, str] = {
     "AWS::EC2::RouteTable": "aws_route_table",
     "AWS::EC2::NetworkAcl": "aws_network_acl",
     "AWS::EC2::Volume": "aws_ebs_volume",
+    "AWS::EC2::Snapshot": "aws_ebs_snapshot",  # listed natively, and only when it looks abandoned
     "AWS::EC2::VPCEndpoint": "aws_vpc_endpoint",
     "AWS::S3::Bucket": "aws_s3_bucket",
     "AWS::Lambda::Function": "aws_lambda_function",
@@ -504,7 +505,38 @@ def _volumes(s, r):
     for v in _paginate(ec2, "describe_volumes", "Volumes"):
         # A volume launched with an instance (root or block-device mapping) is part of that instance.
         with_instance = any(a.get("DeleteOnTermination") for a in v.get("Attachments") or [])
-        out.append({"Identifier": v["VolumeId"], "Properties": {"LaunchedWithInstance": with_instance, "Tags": v.get("Tags") or []}})
+        out.append({"Identifier": v["VolumeId"], "Properties": {
+            "LaunchedWithInstance": with_instance, "State": v.get("State"), "Size": v.get("Size"),
+            "VolumeType": v.get("VolumeType"), "CreateTime": v.get("CreateTime"), "Tags": v.get("Tags") or []}})
+    return out
+
+
+ABANDONED_SNAPSHOT_DAYS = 90
+
+
+def _snapshots(s, r):
+    """Only snapshots that look abandoned: listing every snapshot would bury the report (most never are in IaC).
+    Abandoned: this account's, older than ABANDONED_SNAPSHOT_DAYS, its volume gone, no AMI of this account
+    uses it, standard tier, and not made by AWS Backup or Data Lifecycle Manager."""
+    from datetime import datetime, timedelta, timezone
+    ec2 = s.client("ec2", region_name=r)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ABANDONED_SNAPSHOT_DAYS)
+    snapshots = [x for x in _paginate(ec2, "describe_snapshots", "Snapshots", OwnerIds=["self"])
+                 if x.get("StartTime") and x["StartTime"] <= cutoff and x.get("StorageTier", "standard") == "standard"]
+    if not snapshots:
+        return []
+    volumes = {v["VolumeId"] for v in _paginate(ec2, "describe_volumes", "Volumes")}
+    in_ami = {m["Ebs"]["SnapshotId"] for image in _paginate(ec2, "describe_images", "Images", Owners=["self"])
+              for m in image.get("BlockDeviceMappings") or [] if (m.get("Ebs") or {}).get("SnapshotId")}
+    out = []
+    for x in snapshots:
+        tags = {t.get("Key"): t.get("Value") for t in x.get("Tags") or []}
+        if x["SnapshotId"] in in_ami or x.get("VolumeId") in volumes or any(
+                k.startswith(("aws:backup:", "aws:dlm:")) for k in tags) or "AWS Backup" in str(x.get("Description")):
+            continue
+        out.append({"Identifier": x["SnapshotId"], "Properties": {
+            "Abandoned": True, "VolumeSize": x.get("VolumeSize"), "FullSnapshotSizeInBytes": x.get("FullSnapshotSizeInBytes"),
+            "StartTime": x["StartTime"], "VolumeId": x.get("VolumeId"), "Tags": x.get("Tags") or []}})
     return out
 
 
@@ -610,7 +642,8 @@ def _elasticache_clusters(s, r):
 
 def _classic_elbs(s, r):
     elb = s.client("elb", region_name=r)
-    return [{"Identifier": x["LoadBalancerName"], "Properties": {}}
+    return [{"Identifier": x["LoadBalancerName"], "Properties": {
+        "Instances": len(x.get("Instances") or []), "CreateTime": x.get("CreatedTime")}}
             for x in _paginate(elb, "describe_load_balancers", "LoadBalancerDescriptions")]
 
 
@@ -646,9 +679,30 @@ def _load_balancers(s, r):
     elb = s.client("elbv2", region_name=r)
     lbs = _paginate(elb, "describe_load_balancers", "LoadBalancers")
     tags = _elbv2_tags(elb, [lb["LoadBalancerArn"] for lb in lbs])
+    usage = _lb_usage(elb, lbs)
     return [{"Identifier": lb["LoadBalancerArn"], "Properties": {
         "LoadBalancerArn": lb["LoadBalancerArn"], "LoadBalancerName": lb.get("LoadBalancerName"),
+        "Type": lb.get("Type"), "CreateTime": lb.get("CreatedTime"), **usage.get(lb["LoadBalancerArn"], {}),
         "Tags": tags.get(lb["LoadBalancerArn"], [])}} for lb in lbs]
+
+
+def _lb_usage(elb, lbs) -> dict[str, dict[str, int]]:
+    """Listeners and registered targets per load balancer; empty when they can't be read (then say nothing)."""
+    try:
+        out = {lb["LoadBalancerArn"]: {"Listeners": len(_paginate(elb, "describe_listeners", "Listeners",
+                                                                   LoadBalancerArn=lb["LoadBalancerArn"])), "Targets": 0}
+               for lb in lbs if lb.get("Type") in ("application", "network")}
+        if not out:
+            return {}
+        for group in _paginate(elb, "describe_target_groups", "TargetGroups"):
+            arns = [a for a in group.get("LoadBalancerArns") or [] if a in out]
+            if arns:
+                n = len(elb.describe_target_health(TargetGroupArn=group["TargetGroupArn"]).get("TargetHealthDescriptions") or [])
+                for a in arns:
+                    out[a]["Targets"] += n
+        return out
+    except Exception:
+        return {}
 
 
 def _target_groups(s, r):
@@ -693,6 +747,31 @@ def _eks_children(kind):
     return _list
 
 
+_SCALING_NAMESPACES = ("ecs", "dynamodb", "rds", "elasticmapreduce", "ec2", "appstream", "sagemaker", "lambda",
+                       "cassandra", "kafka", "elasticache", "neptune", "comprehend", "custom-resource", "workspaces")
+
+
+def _scalable_targets(s, r):
+    # Cloud Control can't list these without a namespace; the ID is Cloud Control's
+    # (ResourceId|ScalableDimension|ServiceNamespace), so state and import IDs match as for other types.
+    aas = s.client("application-autoscaling", region_name=r)
+    out = []
+    for ns in _SCALING_NAMESPACES:
+        try:
+            targets = _paginate(aas, "describe_scalable_targets", "ScalableTargets", ServiceNamespace=ns)
+        except Exception as exc:
+            if "ValidationException" in f"{type(exc).__name__} {exc}":  # a namespace this region doesn't have
+                continue
+            raise
+        for t in targets:
+            out.append({"Identifier": f"{t['ResourceId']}|{t['ScalableDimension']}|{ns}",
+                        "Properties": {"ResourceId": t["ResourceId"], "Arn": t.get("ScalableTargetARN") or "",
+                                       # "orch-imp-table read capacity": what it scales, and which dimension
+                                       "Name": f"{t['ResourceId'].rsplit('/', 1)[-1]} "
+                                               f"{t['ScalableDimension'].rsplit(':', 1)[-1]}"}})
+    return out
+
+
 def _opensearch_domains(s, r):
     client = s.client("opensearch", region_name=r)
     return [{"Identifier": d["DomainName"], "Properties": {"DomainName": d["DomainName"]}}
@@ -732,6 +811,8 @@ NATIVE_LISTERS: dict[str, Callable[[Any, str], list[dict[str, Any]]]] = {
     "AWS::EC2::EIP": _elastic_ips,
     "AWS::EC2::Instance": _instances,
     "AWS::EC2::Volume": _volumes,
+    "AWS::ApplicationAutoScaling::ScalableTarget": _scalable_targets,
+    "AWS::EC2::Snapshot": _snapshots,
     "AWS::EC2::VPCEndpoint": _vpc_endpoints,
     "AWS::S3::Bucket": _buckets,
     "AWS::IAM::Role": _iam_roles,
@@ -1001,16 +1082,116 @@ def _short_reason(text: str) -> str:
     return text.splitlines()[0][:160]
 
 
+# --- import blocks -----------------------------------------------------------
+
+# Where the listed identifier isn't what Terraform imports by. Each was checked against the Import section of
+# the resource's page in the Terraform AWS provider docs (2026-11-24). (res, account) -> import ID, or "".
+
+def _parts(res: LiveResource, n: int) -> list[str]:
+    parts = res.identifier.split("|")
+    return parts if len(parts) == n and all(parts) else []
+
+
+def _wafv2(res: LiveResource, account: str) -> str:  # Cloud Control: Name|Id|Scope; Terraform: ID/NAME/SCOPE
+    p = _parts(res, 3)
+    return f"{p[1]}/{p[0]}/{p[2]}" if p else ""
+
+
+def _scalable_target(res: LiveResource, account: str) -> str:
+    # Cloud Control: ResourceId|ScalableDimension|ServiceNamespace; Terraform: namespace/resource-id/dimension
+    p = _parts(res, 3)
+    return f"{p[2]}/{p[0]}/{p[1]}" if p else ""
+
+
+def _arn_tail(marker: str) -> Callable[[LiveResource, str], str]:
+    """Terraform takes the name or ID that follows `marker` in the listed ARN."""
+    def convert(res: LiveResource, account: str) -> str:
+        arn = res.arn or res.identifier
+        return arn.split(marker, 1)[1] if marker in arn else ("" if arn.startswith("arn:") else res.identifier)
+    return convert
+
+
+def _arn_of(service: str, path: str) -> Callable[[LiveResource, str], str]:
+    """Terraform takes the ARN; build it from the name when the listing only gave the name."""
+    def convert(res: LiveResource, account: str) -> str:
+        if res.arn.startswith("arn:"):
+            return res.arn
+        if not account or not res.region:
+            return ""
+        return f"arn:aws:{service}:{res.region}:{account}:{path}{res.identifier}"
+    return convert
+
+
+def _account_name(res: LiveResource, account: str) -> str:
+    return f"{account}:{res.identifier}" if account else ""
+
+
+def _prop(*keys: str) -> Callable[[LiveResource, str], str]:
+    def convert(res: LiveResource, account: str) -> str:
+        return next((str(res.props[k]) for k in keys if res.props.get(k)), "")
+    return convert
+
+
+_IMPORT_IDS: dict[str, Callable[[LiveResource, str], str]] = {
+    **{t: _wafv2 for t in ("aws_wafv2_web_acl", "aws_wafv2_ip_set", "aws_wafv2_regex_pattern_set",
+                           "aws_wafv2_rule_group")},
+    "aws_appautoscaling_target": _scalable_target,
+    # FilterName|LogGroupName -> "group|filter"
+    "aws_cloudwatch_log_subscription_filter": lambda res, account: "|".join(reversed(_parts(res, 2))),
+    # app|child (this tool's listing) -> "child:app"
+    **{t: (lambda res, account: ":".join(reversed(_parts(res, 2))))
+       for t in ("aws_appconfig_environment", "aws_appconfig_configuration_profile")},
+    # service ARN -> "cluster/service"
+    "aws_ecs_service": lambda res, account: "/".join((res.props.get("_aliases") or [[]])[0][:2])
+    if len((res.props.get("_aliases") or [[]])[0]) >= 2 else "",
+    "aws_kinesis_firehose_delivery_stream": _arn_of("firehose", "deliverystream/"),
+    "aws_cloudtrail": _arn_of("cloudtrail", "trail/"),
+    "aws_kinesisanalyticsv2_application": _arn_of("kinesisanalytics", "application/"),
+    "aws_cloudwatch_query_definition": _arn_of("logs", "query-definition:"),
+    "aws_budgets_budget": _account_name,
+    "aws_s3_access_point": _account_name,
+    "aws_appsync_graphql_api": _arn_tail(":apis/"),
+    "aws_batch_compute_environment": _arn_tail(":compute-environment/"),
+    "aws_cloudfront_function": _arn_tail(":function/"),
+    "aws_sagemaker_notebook_instance": _arn_tail(":notebook-instance/"),
+    "aws_transfer_server": _arn_tail(":server/"),
+    "aws_xray_sampling_rule": _arn_tail(":sampling-rule/"),
+    "aws_dms_replication_instance": _prop("ReplicationInstanceIdentifier"),
+    "aws_codecommit_repository": _prop("RepositoryName", "Name"),
+    "aws_scheduler_schedule": lambda res, account: f"{res.props.get('GroupName') or 'default'}/{res.identifier}",
+}
+
+
+def import_id(res: LiveResource, account: str = "") -> str:
+    """The ID `terraform import` / an `import {}` block takes for this resource, or "" when not known.
+    Anything else with a "|" in it is a composite Cloud Control key Terraform won't take."""
+    convert = _IMPORT_IDS.get(res.tf_type)
+    if convert:
+        return convert(res, account)
+    return "" if "|" in res.identifier else res.identifier
+
+
 # --- idle and still billing ------------------------------------------------
 # Hourly on-demand rates come from the AWS Price List API for the resource's region. When that can't be
 # read (no pricing:GetProducts, no network), the us-east-1 list prices below are used and the text says so.
 
 HOURS_PER_MONTH = 730
-_US_EAST_1_HOURLY = {"nat": 0.045, "ipv4_in_use": 0.005, "ipv4_idle": 0.005}
+# Per hour, except EBS volumes and snapshots: per GB-month.
+_US_EAST_1_RATES = {"nat": 0.045, "ipv4_in_use": 0.005, "ipv4_idle": 0.005, "alb": 0.0225, "nlb": 0.0225, "clb": 0.025,
+                    "snapshot": 0.05, "ebs:gp3": 0.08, "ebs:gp2": 0.10, "ebs:io1": 0.125, "ebs:io2": 0.125,
+                    "ebs:st1": 0.045, "ebs:sc1": 0.015, "ebs:standard": 0.05}
+_EBS_USAGE = {"gp3": "EBS:VolumeUsage.gp3", "gp2": "EBS:VolumeUsage.gp2", "io1": "EBS:VolumeUsage.piops",
+              "io2": "EBS:VolumeUsage.io2", "st1": "EBS:VolumeUsage.st1", "sc1": "EBS:VolumeUsage.sc1",
+              "standard": "EBS:VolumeUsage"}
 _PRICE_QUERIES = {  # kind -> (service code, usage type without its region prefix, extra filters)
     "nat": ("AmazonEC2", "NatGateway-Hours", {"productFamily": "NAT Gateway", "operation": "NatGateway"}),
     "ipv4_in_use": ("AmazonVPC", "PublicIPv4:InUseAddress", {"group": "VPCPublicIPv4Address"}),
     "ipv4_idle": ("AmazonVPC", "PublicIPv4:IdleAddress", {"group": "VPCPublicIPv4Address"}),
+    "alb": ("AWSELB", "LoadBalancerUsage", {"productFamily": "Load Balancer-Application"}),
+    "nlb": ("AWSELB", "LoadBalancerUsage", {"productFamily": "Load Balancer-Network"}),
+    "clb": ("AWSELB", "LoadBalancerUsage", {"productFamily": "Load Balancer"}),
+    "snapshot": ("AmazonEC2", "EBS:SnapshotUsage", {"productFamily": "Storage Snapshot"}),
+    **{f"ebs:{t}": ("AmazonEC2", u, {"productFamily": "Storage", "volumeApiName": t}) for t, u in _EBS_USAGE.items()},
 }
 
 
@@ -1052,7 +1233,7 @@ class Prices:
                         return usd
         return None
 
-    def hourly(self, kind: str, region: str) -> tuple[float, bool]:
+    def rate(self, kind: str, region: str) -> tuple[float, bool]:
         """(rate, True) from the Price List API, or (us-east-1 rate, False) when it couldn't be read."""
         if not self.failed and (kind, region) not in self._cache:
             try:
@@ -1062,14 +1243,14 @@ class Prices:
                 self._log(f"note: could not read AWS prices ({_short_reason(str(exc))}); idle costs use us-east-1 list prices. "
                           "Live prices need pricing:GetProducts (in ReadOnlyAccess).", file=sys.stderr)
         rate = self._cache.get((kind, region))
-        return (rate, True) if rate else (_US_EAST_1_HOURLY[kind], False)
+        return (rate, True) if rate else (_US_EAST_1_RATES[kind], False)
 
 
 def _nat_monthly(p: dict, region: str, prices: Prices) -> tuple[float, str, bool]:
     """(monthly USD, the gateway/address split or "", whether every price was live) for a NAT gateway."""
-    nat, live = prices.hourly("nat", region)
+    nat, live = prices.rate("nat", region)
     ips = int(p.get("PublicIps") or 0)
-    ip, ip_live = prices.hourly("ipv4_in_use", region) if ips else (0.0, live)
+    ip, ip_live = prices.rate("ipv4_in_use", region) if ips else (0.0, live)
     gateway, addresses = nat * HOURS_PER_MONTH, ip * HOURS_PER_MONTH * ips
     split = ""
     if ips:  # each public IPv4 address on it is billed too (since February 2024)
@@ -1099,10 +1280,65 @@ def idle_cost(res: LiveResource, prices: Prices | None = None) -> tuple[str, flo
                f"a NAT gateway that quiet still bills about ${monthly:.2f}/month")
         return why + split + _price_note(region, live), monthly
     if res.tf_type == "aws_eip" and p.get("Attached") is False and not p.get("ServiceManaged"):
-        ip, live = prices.hourly("ipv4_idle", region)
+        ip, live = prices.rate("ipv4_idle", region)
         monthly = ip * HOURS_PER_MONTH
         return f"attached to nothing; an Elastic IP still bills about ${monthly:.2f}/month" + _price_note(region, live), monthly
+    if _young(p.get("CreateTime")):
+        return None  # a new volume or load balancer may simply not be in use yet
+    if res.tf_type == "aws_ebs_volume" and p.get("State") == "available" and p.get("Size"):
+        kind = f"ebs:{p.get('VolumeType')}" if f"ebs:{p.get('VolumeType')}" in _US_EAST_1_RATES else "ebs:gp2"
+        gb_month, live = prices.rate(kind, region)
+        monthly = gb_month * float(p["Size"])
+        return (f"attached to nothing; this {p['Size']} GB {p.get('VolumeType') or ''} volume still bills about "
+                f"${monthly:.2f}/month for storage" + _price_note(region, live), monthly)
+    if res.tf_type in ("aws_lb", "aws_alb") and p.get("Targets") == 0 and p.get("Type") in ("application", "network"):
+        hourly, live = prices.rate("alb" if p["Type"] == "application" else "nlb", region)
+        monthly = hourly * HOURS_PER_MONTH
+        n = int(p.get("Listeners") or 0)
+        what = (f"it has {n} listener{'s' if n != 1 else ''} but no registered targets, so it can only redirect or "
+                "return fixed responses" if n else "no listeners and no registered targets")
+        return f"{what}; a load balancer still bills about ${monthly:.2f}/month" + _price_note(region, live), monthly
+    if res.tf_type == "aws_elb" and p.get("Instances") == 0:
+        hourly, live = prices.rate("clb", region)
+        monthly = hourly * HOURS_PER_MONTH
+        return (f"no instances registered; a Classic Load Balancer still bills about ${monthly:.2f}/month"
+                + _price_note(region, live), monthly)
+    if res.tf_type == "aws_ebs_snapshot" and p.get("Abandoned"):
+        gb_month, live = prices.rate("snapshot", region)
+        full = p.get("FullSnapshotSizeInBytes")
+        gb = float(full) / 2**30 if full else float(p.get("VolumeSize") or 0)
+        monthly = gb_month * gb
+        days = _age_days(p.get("StartTime"))
+        return (f"{days} days old, its volume {p.get('VolumeId') or ''} is gone and no AMI uses it; it bills up to about "
+                f"${monthly:.2f}/month for {gb:.0f} GB (less if it shares blocks with other snapshots)"
+                + _price_note(region, live), monthly)
     return None
+
+
+IDLE_MIN_AGE_DAYS = 7
+
+
+def _age_days(created: Any) -> int:
+    from datetime import datetime, timezone
+    if not isinstance(created, datetime):
+        return 0
+    return (datetime.now(timezone.utc) - (created if created.tzinfo else created.replace(tzinfo=timezone.utc))).days
+
+
+def _young(created: Any) -> bool:
+    return created is not None and _age_days(created) < IDLE_MIN_AGE_DAYS
+
+
+def idle_label(res: LiveResource) -> str:
+    """"idle" when it certainly does nothing; a softer word when it probably doesn't (found at medium severity)."""
+    p = res.props
+    if res.tf_type == "aws_nat_gateway" and p.get("Routed"):
+        return "nearly unused"
+    if res.tf_type in ("aws_lb", "aws_alb") and p.get("Listeners"):
+        return "probably unused"
+    if res.tf_type == "aws_ebs_snapshot":
+        return "probably abandoned"
+    return "idle"
 
 
 def _price_note(region: str, live: bool) -> str:
@@ -1192,21 +1428,104 @@ def duplicate_imports(iac: list[IacEntry]) -> list[dict[str, Any]]:
             for (t, i, _, _), entries in sorted(seen.items()) if len(entries) > 1]
 
 
+def _optional_s3(s3: Any, bucket: str, key: str, problems: list[str]) -> list[tuple[str, dict[str, Any]]]:
+    """The default workspace's state; missing is fine when only named workspaces were ever applied."""
+    label = f"s3://{bucket}/{key}"
+    try:
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except Exception as exc:
+        if "NoSuchKey" in f"{type(exc).__name__} {exc}":
+            return []
+        raise
+    doc = _state_doc(label, body, problems)
+    return [(label, doc)] if doc is not None else []
+
+
+def _state_doc(label: str, raw: bytes | str, problems: list[str] | None) -> dict[str, Any] | None:
+    """The parsed state, or None (noted in problems) when it isn't a state file this tool reads."""
+    if not (raw.strip() if isinstance(raw, str) else raw.strip()):
+        return None  # an empty object, e.g. a workspace that was never applied: nothing to compare
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        reason = f"not JSON: {exc}"
+    else:
+        if isinstance(doc, dict) and int(doc.get("version") or 4) >= 4:
+            return doc
+        reason = "an old state format (version 3 or earlier); run terraform state pull with a current Terraform"
+    if problems is None:
+        raise ValueError(f"{label} is {reason}")
+    problems.append(f"state {label} could not be read ({reason})")
+    return None
+
+
 def read_state_source(source: str, session: Any = None, binary: str | None = None,
-                      runner=subprocess.run) -> list[tuple[str, dict[str, Any]]]:
-    """(label, state doc) for a local file, s3://bucket/key, s3://bucket/prefix/, or a Terraform directory."""
+                      runner=subprocess.run, problems: list[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
+    """(label, state doc) for a local file, s3://bucket/key, s3://bucket/prefix/, a Terraform directory, or a
+    folder of .tfstate files. With `problems`, a file in a prefix or folder that can't be read is noted there
+    and the others are still returned."""
     if source.startswith("s3://"):
         bucket, _, key = source[5:].partition("/")
         s3 = session.client("s3")
         keys = [key] if key.endswith(".tfstate") else [
             o["Key"] for o in _paginate(s3, "list_objects_v2", "Contents", Bucket=bucket, Prefix=key)
             if o["Key"].endswith(".tfstate")]
-        docs = []
+        docs, failed = [], []
         for k in keys:
-            body = s3.get_object(Bucket=bucket, Key=k)["Body"].read()
-            docs.append((f"s3://{bucket}/{k}", json.loads(body)))
+            label = f"s3://{bucket}/{k}"
+            try:
+                body = s3.get_object(Bucket=bucket, Key=k)["Body"].read()
+            except Exception as exc:
+                if problems is None or len(keys) == 1:
+                    raise
+                failed.append((label, exc))
+                continue
+            if (doc := _state_doc(label, body, problems)) is not None:
+                docs.append((label, doc))
+        if failed and len(failed) == len(keys):  # nothing readable: let the caller try other credentials
+            raise failed[0][1]
+        problems = problems if problems is not None else []
+        problems += [f"state {label} could not be read ({_short_reason(str(exc))})" for label, exc in failed]
         return docs
-    if os.path.isdir(source):
+    if os.path.isdir(source) and not any(name.endswith(".tf") for name in os.listdir(source)):
+        files = sorted(os.path.join(root, name) for root, _, names in os.walk(source)
+                       for name in names if name.endswith(".tfstate"))
+        if not files:
+            raise RuntimeError(f"{source} has no .tf files and no .tfstate files.")
+        docs = []
+        for path in files:
+            with open(path, "rb") as fh:
+                if (doc := _state_doc(path, fh.read(), problems)) is not None:
+                    docs.append((path, doc))
+        return docs
+    if os.path.isdir(source) and (backend := terraform_backend(source)) is not None:
+        noted = problems if problems is not None else []
+        if backend["type"] == "s3" and backend.get("bucket") and backend.get("key"):
+            s3 = session.client("s3", region_name=backend.get("region") or None)
+            keys = _s3_workspace_keys(s3, backend)
+            docs, failed = [], []
+            for key in keys:
+                try:
+                    docs += _optional_s3(s3, backend["bucket"], key, noted)
+                except Exception as exc:
+                    failed.append((f"s3://{backend['bucket']}/{key}", exc))
+            if failed and len(failed) == len(keys):  # nothing readable: let the caller try other credentials
+                raise failed[0][1]
+            noted += [f"state {label} could not be read ({_short_reason(str(exc))})" for label, exc in failed]
+            return docs
+        if backend["type"] == "local":
+            files = _local_state_files(source, backend)
+            if not files:
+                raise RuntimeError(f"{source} uses local state, but there is no terraform.tfstate yet.")
+            docs = []
+            for path in files:
+                with open(path, "rb") as fh:
+                    if (doc := _state_doc(path, fh.read(), noted)) is not None:
+                        docs.append((path, doc))
+            return docs
+        if backend["type"] in ("cloud", "remote"):
+            return tfc_states(backend, noted)
+    if os.path.isdir(source):  # another backend type: let Terraform read it
         tf = binary or next((b for b in ("tofu", "terraform") if _which(b)), None)
         if not tf:
             raise RuntimeError("Neither `tofu` nor `terraform` was found on PATH to read state from a directory.")
@@ -1214,8 +1533,146 @@ def read_state_source(source: str, session: Any = None, binary: str | None = Non
         if proc.returncode != 0:
             raise RuntimeError(f"`{tf} state pull` in {source} failed:\n{proc.stderr or proc.stdout}")
         return [(source, json.loads(proc.stdout or "{}"))]
-    with open(source, encoding="utf-8") as fh:
-        return [(source, json.load(fh))]
+    with open(source, "rb") as fh:
+        doc = _state_doc(source, fh.read(), None)
+    return [(source, doc)] if doc is not None else []
+
+
+# --- finding state from Terraform code --------------------------------------
+
+def _hcl_block(text: str, start: int) -> str:
+    """The body of the {...} block whose opening brace is at or after `start`."""
+    i = text.index("{", start)
+    depth = 0
+    for j in range(i, len(text)):
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        if depth == 0:
+            return text[i + 1:j]
+    return text[i + 1:]
+
+
+def _hcl_attrs(body: str) -> dict[str, Any]:
+    """Top-level `name = "value"` and `name = [..]` attributes (nested blocks are skipped)."""
+    flat, depth, out = [], 0, {}
+    for ch in body:
+        depth += {"{": 1, "}": -1}.get(ch, 0)
+        flat.append(ch if depth == 0 or ch == "}" else " ")
+    for name, value, items in re.findall(r'(\w+)\s*=\s*(?:"([^"]*)"|\[([^\]]*)\])', "".join(flat)):
+        out[name] = re.findall(r'"([^"]*)"', items) if items else value
+    return out
+
+
+def terraform_backend(directory: str) -> dict[str, Any] | None:
+    """The backend of the Terraform code in `directory`: {"type": ..., settings...}, or None without code.
+    After `terraform init` the resolved settings (with -backend-config values) are read from .terraform/."""
+    tf_files = [os.path.join(directory, n) for n in sorted(os.listdir(directory)) if n.endswith(".tf")]
+    if not tf_files:
+        return None
+    init = os.path.join(directory, ".terraform", "terraform.tfstate")
+    if os.path.isfile(init):
+        try:
+            with open(init, encoding="utf-8") as fh:
+                backend = (json.load(fh) or {}).get("backend") or {}
+            if backend.get("type"):
+                return {"type": backend["type"], **(backend.get("config") or {})}
+        except (OSError, ValueError):
+            pass
+    code = ""
+    for path in tf_files:
+        with open(path, encoding="utf-8") as fh:
+            code += re.sub(r"(?m)^\s*(#|//).*$", "", fh.read()) + "\n"
+    # Only terraform {} blocks say where state lives.
+    text = "\n".join(_hcl_block(code, m.start()) for m in re.finditer(r'(?m)^\s*terraform\s*\{', code))
+    if (m := re.search(r'\bcloud\s*\{', text)):
+        body = _hcl_block(text, m.start())
+        ws = re.search(r'\bworkspaces\s*\{', body)
+        return {"type": "cloud", **_hcl_attrs(body), "workspaces": _hcl_attrs(_hcl_block(body, ws.start())) if ws else {}}
+    if (m := re.search(r'\bbackend\s+"([\w-]+)"\s*\{', text)):
+        body = _hcl_block(text, m.start())
+        ws = re.search(r'\bworkspaces\s*\{', body)
+        out = {"type": m.group(1), **_hcl_attrs(body)}
+        if ws:
+            out["workspaces"] = _hcl_attrs(_hcl_block(body, ws.start()))
+        return out
+    return {"type": "local"}
+
+
+def _local_state_files(directory: str, backend: dict[str, Any]) -> list[str]:
+    path = backend.get("path") or "terraform.tfstate"
+    base = os.path.join(directory, path)
+    files = [base] if os.path.isfile(base) else []
+    ws_dir = os.path.join(directory, backend.get("workspace_dir") or "terraform.tfstate.d")
+    if os.path.isdir(ws_dir):
+        files += sorted(os.path.join(ws_dir, ws, os.path.basename(path)) for ws in os.listdir(ws_dir)
+                        if os.path.isfile(os.path.join(ws_dir, ws, os.path.basename(path))))
+    return files
+
+
+def _s3_workspace_keys(s3: Any, backend: dict[str, Any]) -> list[str]:
+    """The default workspace's key and every other workspace's (<workspace_key_prefix>/<name>/<key>)."""
+    bucket, key = backend["bucket"], backend["key"]
+    prefix = (backend.get("workspace_key_prefix") or "env:").strip("/")
+    keys = [key]
+    for o in _paginate(s3, "list_objects_v2", "Contents", Bucket=bucket, Prefix=f"{prefix}/"):
+        rest = o["Key"][len(prefix) + 1:]
+        if "/" in rest and rest.split("/", 1)[1] == key:
+            keys.append(o["Key"])
+    return keys
+
+
+def _tfc_token(host: str) -> str:
+    env = os.environ.get("TF_TOKEN_" + re.sub(r"[.-]", "_", host)) or os.environ.get("TFE_TOKEN")
+    if env:
+        return env
+    path = os.path.expanduser("~/.terraform.d/credentials.tfrc.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return str(((json.load(fh) or {}).get("credentials") or {}).get(host, {}).get("token") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _tfc_get(url: str, token: str, opener=None) -> Any:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
+                                               "Content-Type": "application/vnd.api+json"})
+    with (opener or urllib.request.urlopen)(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+def tfc_states(backend: dict[str, Any], problems: list[str], opener=None) -> list[tuple[str, dict[str, Any]]]:
+    """Current state of each HCP Terraform / Terraform Enterprise workspace the code's cloud or remote block names."""
+    host = backend.get("hostname") or "app.terraform.io"
+    org = backend.get("organization") or os.environ.get("TF_CLOUD_ORGANIZATION") or ""
+    ws = backend.get("workspaces") or {}
+    token = _tfc_token(host)
+    if not org or not token:
+        raise RuntimeError(f"Reading state from {host} needs the organization and an API token "
+                           f"(TF_TOKEN_{re.sub(r'[.-]', '_', host)} or `terraform login`).")
+    api = f"https://{host}/api/v2"
+    from urllib.parse import quote
+    if ws.get("name"):
+        found = [_tfc_get(f"{api}/organizations/{quote(org)}/workspaces/{quote(ws['name'])}", token, opener)["data"]]
+    else:
+        query = (f"search[tags]={quote(','.join(ws['tags']))}" if ws.get("tags") else
+                 f"search[name]={quote(ws.get('prefix') or '')}")
+        found, page = [], 1
+        while page:
+            doc = _tfc_get(f"{api}/organizations/{quote(org)}/workspaces?page[size]=100&page[number]={page}&{query}",
+                           token, opener)
+            found += [w for w in doc.get("data") or []
+                      if not ws.get("prefix") or w["attributes"]["name"].startswith(ws["prefix"])]
+            page = ((doc.get("meta") or {}).get("pagination") or {}).get("next-page")
+    out = []
+    for w in found:
+        name = w["attributes"]["name"]
+        try:
+            version = _tfc_get(f"{api}/workspaces/{w['id']}/current-state-version", token, opener)["data"]
+            url = version["attributes"]["hosted-state-download-url"]
+            out.append((f"{host}/{org}/{name}", _tfc_get(url, token, opener)))
+        except Exception as exc:  # e.g. a workspace with no state yet
+            problems.append(f"state of workspace {org}/{name} could not be read ({_short_reason(str(exc))})")
+    return out
 
 
 def _which(name: str) -> bool:

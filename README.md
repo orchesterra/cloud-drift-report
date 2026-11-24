@@ -60,6 +60,11 @@ The scan also flags what costs money while doing nothing: a NAT gateway that no 
 attached to nothing (about $3.65 a month). A NAT gateway that routes do point at, but that moved under
 1 GB in the last 14 days (CloudWatch `BytesOutToDestination` plus `BytesInFromDestination`), is flagged as
 nearly unused, at medium severity since it may be a standby; gateways younger than 14 days aren't judged.
+It also flags an EBS volume attached to nothing (priced per GB for its volume type), a load balancer with no
+registered targets (medium when it has listeners, since it may only redirect) or a Classic Load Balancer with
+no instances, and EBS snapshots that look abandoned: older than 90 days, their volume gone, no AMI of yours
+using them, and not made by AWS Backup or Data Lifecycle Manager (medium; snapshots are only listed when they
+look like this). Volumes and load balancers younger than 7 days aren't judged.
 Costs use that region's on-demand rates from the AWS Price List API
 (`pricing:GetProducts`); if it can't be read, the us-east-1 list price is used and the finding says so. One
 that is also not in IaC is reported at high severity with the cost in its explanation; ones your Terraform
@@ -250,8 +255,14 @@ cloud-drift-report terraform --dir ./infra --fail-on-drift
 Exit codes: `0` ok, `1` error, `2` drift or a resource not in IaC found with `--fail-on-drift`.
 
 `--state` takes a local `.tfstate` file, `s3://bucket/key.tfstate`, `s3://bucket/prefix/` (every `.tfstate`
-under it) or an initialised Terraform directory (read with `state pull`). It may repeat. Without `--state`,
-only CloudFormation stacks count as IaC.
+under it), a Terraform directory or a folder of `.tfstate` files. For a Terraform directory the backend is
+read from the code (or from `.terraform/` after `terraform init`), and every workspace's state is read: an S3
+backend's default key and its `env:/<workspace>/` keys, local state and `terraform.tfstate.d/`, or each HCP
+Terraform / Terraform Enterprise workspace a `cloud` block or `remote` backend names (token from
+`TF_TOKEN_app_terraform_io` or `terraform login`). Other backends are read with `state pull`. With no `--state`,
+a Terraform directory you run it from is used. It may repeat. A source or file that can't be read is named in the incomplete-scan warning and the others still count;
+the run stops only when no `--state` can be read. Without `--state` and outside Terraform code, only
+CloudFormation stacks count as IaC.
 
 ## Settings file: `.driftreport.yml`
 
@@ -274,6 +285,23 @@ cloudformation:
 Flags on the command line win; a repeatable flag such as `--region` given there replaces the file's list.
 Relative paths are read from the file's folder. `--config FILE` reads another file, and `--no-config` skips it.
 A misspelt key is an error that names it.
+
+## Bringing resources into Terraform: import blocks
+
+Write the not-in-IaC findings as Terraform `import {}` blocks, then let Terraform write the code:
+
+```bash
+cloud-drift-report unmanaged --state s3://my-tf-state/prod/ -o imports.tf
+terraform plan -generate-config-out=generated.tf
+```
+
+A `.tf` output file always gets import blocks (or pass `-f imports`). Each block uses the resource's
+Terraform import ID, in the format the resource's Import section in the Terraform AWS provider docs gives
+(composite IDs such as WAFv2's `ID/NAME/SCOPE` are converted); where it still isn't known, the block is written
+commented out with a note, so you can fix the ID from the provider docs. Terraform's generated code is
+experimental and often needs small fixes before the plan passes (it can write zero values such as
+`volume_initialization_rate = 0` or two arguments that conflict); the errors name the line. Review
+`generated.tf`, delete the blocks you don't want to manage, then apply. The JSON report has the same IDs as `import_id`.
 
 ## Ignoring findings: `.driftignore`
 

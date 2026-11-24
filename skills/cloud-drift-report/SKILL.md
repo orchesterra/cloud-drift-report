@@ -51,9 +51,10 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
    - `DRIFT cloudformation --profile <profile> --region <region> [--stack NAME ...] --format md`.
      With no `--stack` it checks every top-level stack in the region. Each check can take a minute.
 4. Not in IaC:
-   - Ask where the Terraform state lives if it is not obvious (a local `.tfstate`, an S3 bucket/prefix,
-     or an initialised directory). Without `--state` only CloudFormation stacks count as IaC, so most
-     resources will show as not in IaC; say so.
+   - If the user is in a Terraform directory, `--state .` (or no `--state`) reads its backend and every
+     workspace (S3, local, HCP Terraform with `terraform login`). Otherwise ask where the state lives (a
+     `.tfstate`, an S3 bucket/prefix, a folder of state files). Outside Terraform code and without `--state`
+     only CloudFormation stacks count as IaC, so most resources will show as not in IaC; say so.
    - `DRIFT unmanaged --profile <profile> --region <region> --state s3://<bucket>/<prefix>/ --format md`
      (`--state` may repeat; `--all-regions` scans every enabled region; `--type s3` limits types).
      A region takes about 30-60 seconds.
@@ -68,7 +69,10 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
      when a stack that wasn't read manages them.
    - If the coverage line says "Idle and still billing", name each one and its monthly cost: a NAT gateway no
      route uses, one a route uses that moved under 1 GB in 14 days ("nearly unused": ask whether it is a
-     standby before suggesting removal), or an Elastic IP attached to nothing. Ones marked "(in IaC)" are removed in code, not in AWS.
+     standby before suggesting removal), an Elastic IP or EBS volume attached to nothing, a load balancer with no
+     registered targets ("probably unused" when it has listeners: it may only redirect), or an old snapshot whose
+     volume is gone ("probably abandoned": ask whether it is a kept backup). Ones marked "(in IaC)" are removed in
+     code, not in AWS.
   Costs are that region's list prices; if the finding says "us-east-1 list price used", the Price List API could
   not be read (it needs `pricing:GetProducts`), so the real cost may differ.
 5. Show the Markdown summary in chat: the counts by severity first, then the high rows.
@@ -101,3 +105,7 @@ findings out; the syntax is driftctl's: `<type>.<id>` with `*` wildcards, `<type
 shows everything. When the user wants to stop seeing a finding, suggest the rule rather than editing the
 report, and show it before adding it to their `.driftignore`. `-f driftignore -o .driftignore` writes a
 baseline of everything found now; ask before overwriting an existing file.
+
+When the user wants resources that aren't in IaC brought into Terraform, `-o imports.tf` (or `-f imports`)
+writes an `import {}` block per finding; they then run `terraform plan -generate-config-out=generated.tf` and
+review the code before applying. Blocks whose import ID isn't known are commented out with a note: say so.
