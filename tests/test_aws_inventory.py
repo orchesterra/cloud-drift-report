@@ -311,6 +311,11 @@ def test_unreadable_stacks_make_the_scan_incomplete():
     assert inv.stack_entries(FakeSession({("cloudformation", "list_stacks"): no_stacks}), "eu-west-1",
                              log=lambda *a, **k: None, problems=problems) == []
     assert problems == ["CloudFormation stacks in eu-west-1 could not be listed (access denied)"]
+    # Types no permission would list (they need a parent) are in the JSON but don't make a scan incomplete.
+    assert "needs a parent resource to list; not checked" in inv.KNOWN_LIMITS
+    assert "access denied" not in inv.KNOWN_LIMITS
+    assert inv._short_reason("AccessDeniedException: AWS::Glue::Job Handler returned status FAILED: User: x is "
+                             "not authorized to perform: glue:GetJobs") == "access denied"
     report = dr.Report([], "aws", "111 (eu-west-1)", incomplete=problems)
     md = dr.render_markdown(report)
     assert "> **Warning:** Incomplete scan: CloudFormation stacks in eu-west-1 could not be listed" in md

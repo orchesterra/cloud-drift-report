@@ -16,6 +16,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 - An `account_id` in state no longer sets the resource's account: on member and sharing types such as
   `aws_guardduty_member`, `aws_ami_launch_permission` and `aws_cloudformation_stack_set_instance` it names
   the other account, so 0.6.2 could list them as not in IaC.
+- An access-denied Cloud Control listing is reported as "access denied"; it had said "the service returned an
+  error".
 
 ## [0.6.2] - 2026-11-24
 

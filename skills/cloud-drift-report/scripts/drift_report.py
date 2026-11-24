@@ -944,9 +944,10 @@ def run_unmanaged(args, log=print) -> Report:
     except Exception:
         account = ""
         problems.append("the AWS account could not be read, so state from other accounts counts as IaC too")
-    if inventory.not_listed:
-        first, why = next(iter(inventory.not_listed.items()))
-        n = len(inventory.not_listed)
+    gaps = {k: v for k, v in inventory.not_listed.items() if v not in inv_mod.KNOWN_LIMITS}
+    if gaps:
+        first, why = next(iter(gaps.items()))
+        n = len(gaps)
         problems.insert(0, f"{n} resource type/region pair{'s' if n != 1 else ''} could not be listed "
                            f"(e.g. {first}: {why}; all in the JSON's coverage.not_listed)")
     for line in (inv_mod.explain(inventory, iac, args.explain, account) if args.explain else []):

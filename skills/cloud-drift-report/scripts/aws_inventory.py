@@ -977,13 +977,22 @@ def list_inventory(session: Any, regions: list[str], types: Iterable[str] | None
     return inv
 
 
+# Reasons a type is never listed whatever the permissions: listed in the JSON, but they don't make a scan
+# incomplete (otherwise every scan would say so).
+KNOWN_LIMITS = frozenset({"needs a parent resource to list; not checked", "the service returned an error",
+                          "type not available", "listing not supported", "region or service not enabled",
+                          "service not in region", "service not enabled"})
+
+
 def _short_reason(text: str) -> str:
-    for marker, label in (("Throttling", "throttled by AWS; rerun with fewer --workers"),
+    # Access denied first: Cloud Control wraps it in "Handler returned status FAILED".
+    for marker, label in (("AccessDenied", "access denied"), ("not authorized", "access denied"),
+                          ("UnauthorizedOperation", "access denied"),
+                          ("Throttling", "throttled by AWS; rerun with fewer --workers"),
                           ("Rate exceeded", "throttled by AWS; rerun with fewer --workers"),
                           ("ResourceModel", "needs a parent resource to list; not checked"),
                           ("Handler returned", "the service returned an error"),
-                          ("AccessDenied", "access denied"), ("not authorized", "access denied"),
-                          ("UnauthorizedOperation", "access denied"), ("TypeNotFound", "type not available"),
+                          ("TypeNotFound", "type not available"),
                           ("UnsupportedAction", "listing not supported"), ("is not supported", "listing not supported"),
                           ("OptInRequired", "region or service not enabled"), ("Could not connect", "service not in region"),
                           ("SubscriptionRequired", "service not enabled")):
