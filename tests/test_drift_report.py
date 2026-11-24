@@ -355,3 +355,65 @@ def test_several_outputs_take_their_format_from_the_extension(tmp_path):
     assert md.read_text().startswith("# Drift report")
     assert html_.read_text().startswith("<!doctype html>")
     assert json.loads(js.read_text())["summary"]["total"] == 6
+
+
+# --- .driftreport.yml --------------------------------------------------------
+
+def _config_args(tmp_path, monkeypatch, text, argv):
+    (tmp_path / ".driftreport.yml").write_text(text)
+    monkeypatch.chdir(tmp_path)
+    parser = dr.build_parser()
+    return dr.apply_config(parser, argv, parser.parse_args(argv))
+
+
+def test_config_file_sets_flags_and_the_command_line_wins(tmp_path, monkeypatch):
+    text = """
+format: html
+fail-on-drift: true
+output: [reports/drift.html]
+unmanaged:
+  state: [s3://tf-state/prod/, infra/terraform.tfstate]
+  region: [us-east-1, eu-west-1]
+  workers: 8
+cloudformation:
+  stack: web
+"""
+    args, path = _config_args(tmp_path, monkeypatch, text, ["unmanaged"])
+    assert path == "./.driftreport.yml"
+    assert (args.format, args.fail_on_drift, args.workers) == ("html", True, 8)
+    assert args.region == ["us-east-1", "eu-west-1"] and args.output == ["reports/drift.html"]
+    assert args.state == ["s3://tf-state/prod/", "infra/terraform.tfstate"]
+    assert not hasattr(args, "stack")  # another mode's section is not applied
+    # Flags on the command line win, and a repeatable one replaces the file's list.
+    args, _ = _config_args(tmp_path, monkeypatch, text, ["scan", "-r", "ap-south-1", "-f", "json", "--workers", "2"])
+    assert (args.region, args.format, args.workers) == (["ap-south-1"], "json", 2)
+    args, _ = _config_args(tmp_path, monkeypatch, text, ["cfn"])
+    assert args.stack == ["web"] and args.format == "html"
+    args, path = _config_args(tmp_path, monkeypatch, text, ["unmanaged", "--no-config"])
+    assert path is None and args.format == "md" and args.region == []
+
+
+def test_config_file_mistakes_are_named(tmp_path, monkeypatch, capsys):
+    for text, message in (("fail_on_drfit: true\n", "unknown key `fail_on_drfit`"),
+                          ("unmanaged:\n  stack: web\n", "`stack` isn't a unmanaged option"),
+                          ("format: pdf\n", "format should be one of"),
+                          ("strict: yes please\n", "strict should be true or false"),
+                          ("- region\n", "not a list")):
+        (tmp_path / ".driftreport.yml").write_text(text)
+        monkeypatch.chdir(tmp_path)
+        assert dr.main(["unmanaged"]) == 1
+        assert message in capsys.readouterr().err
+    assert dr.main(["unmanaged", "--config", "missing.yml"]) == 1
+    assert "config file missing.yml not found" in capsys.readouterr().err
+
+
+def test_config_paths_are_relative_to_the_file(tmp_path, monkeypatch):
+    infra = tmp_path / "infra"
+    infra.mkdir()
+    (infra / ".driftreport.yml").write_text("terraform:\n  var-file: [prod.tfvars]\noutput: drift.md\n")
+    monkeypatch.chdir(tmp_path)
+    parser = dr.build_parser()
+    argv = ["tf", "--dir", "infra"]
+    args, path = dr.apply_config(parser, argv, parser.parse_args(argv))
+    assert path == "infra/.driftreport.yml"
+    assert args.var_file == ["infra/prod.tfvars"] and args.output == ["infra/drift.md"]

@@ -10,7 +10,8 @@ AWS but no Terraform state or CloudFormation stack lists ("not in IaC"). Reports
 action, attribute changes (before → after) where there are any, severity and a plain-English guess at what happened.
 
 The tool is `scripts/drift_report.py` in this skill's folder, with `scripts/aws_inventory.py` beside it
-(Python 3.10+; boto3 for the AWS modes).
+(Python 3.10+; boto3 for the AWS modes). If the project has a `.driftreport.yml`, its settings
+(state, regions, format, ...) apply to every run; flags you pass override them.
 If `cloud-drift-report` is on PATH (installed with pip), you can run that instead; the arguments are the same.
 Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `cloud-drift-report`.
 
