@@ -62,8 +62,9 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
      what it says (no entry of that type, another region or account, or the values it looked for).
    - The coverage line's "% in IaC" is the headline number; mention any "in state at more than one address"
      warning, since two applies would fight over that resource.
-   - Read the coverage line: it lists type/region pairs that could not be listed (access denied, needs a
-     parent). Mention them so the user knows what was not checked.
+   - If the report starts with "Warning: Incomplete scan", say so first and name what was missed (types not
+     listed, stacks not read, account unknown): resources there may be missing, or reported as not in IaC
+     when a stack that wasn't read manages them.
    - If the coverage line says "Idle and still billing", name each one and its monthly cost: a NAT gateway no
      route uses, one a route uses that moved under 1 GB in 14 days ("nearly unused": ask whether it is a
      standby before suggesting removal), or an Elastic IP attached to nothing. Ones marked "(in IaC)" are removed in code, not in AWS.

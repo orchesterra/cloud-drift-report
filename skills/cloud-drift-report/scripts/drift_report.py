@@ -375,7 +375,8 @@ def list_stacks(cfn) -> list[str]:
     return names
 
 
-def detect_drift(cfn, stack: str, timeout: float = 600, poll: float = 5, sleep=time.sleep) -> str:
+def detect_drift(cfn, stack: str, timeout: float = 600, poll: float = 5, sleep=time.sleep,
+                 problems: list[str] | None = None) -> str:
     """Start a drift check and wait. Returns the stack drift status."""
     det_id = cfn.detect_stack_drift(StackName=stack)["StackDriftDetectionId"]
     waited = 0.0
@@ -388,6 +389,8 @@ def detect_drift(cfn, stack: str, timeout: float = 600, poll: float = 5, sleep=t
             # Partial results are still useful (some resource types can't be checked).
             reason = st.get("DetectionStatusReason", "")
             print(f"warning: drift detection for {stack} failed partly: {reason}", file=sys.stderr)
+            if problems is not None:
+                problems.append(f"drift detection for {stack} failed partly ({reason or 'no reason given'})")
             return st.get("StackDriftStatus", "UNKNOWN")
         if waited >= timeout:
             raise TimeoutError(f"drift detection for {stack} did not finish in {timeout:.0f}s")
@@ -417,16 +420,19 @@ def stack_findings(cfn, stack: str, region: str = "") -> list[Finding]:
 
 
 def run_cloudformation(cfn, stacks: list[str] | None, region: str = "", timeout: float = 600,
-                       sleep=time.sleep, log=print) -> tuple[list[Finding], dict[str, str]]:
+                       sleep=time.sleep, log=print,
+                       problems: list[str] | None = None) -> tuple[list[Finding], dict[str, str]]:
+    problems = [] if problems is None else problems
     names = stacks or list_stacks(cfn)
     findings: list[Finding] = []
     statuses: dict[str, str] = {}
     for name in names:
         log(f"checking stack {name} …", file=sys.stderr)
         try:
-            statuses[name] = detect_drift(cfn, name, timeout=timeout, sleep=sleep)
+            statuses[name] = detect_drift(cfn, name, timeout=timeout, sleep=sleep, problems=problems)
         except Exception as exc:  # keep going; one bad stack shouldn't sink the report
             statuses[name] = f"ERROR: {exc}"
+            problems.append(f"stack {name} was not checked ({exc})")
             continue
         findings.extend(stack_findings(cfn, name, region))
     return findings, statuses
@@ -478,6 +484,15 @@ class Report:
     ignored: list[tuple[Finding, str]] = field(default_factory=list)  # (finding, .driftignore line)
     ignore_files: list[str] = field(default_factory=list)
     ignore_text: str = ""  # the rules as written, kept when a new .driftignore is generated
+    incomplete: list[str] = field(default_factory=list)  # what the scan couldn't read
+
+    def incomplete_line(self) -> str:
+        if not self.incomplete:
+            return ""
+        shown = "; ".join(self.incomplete[:5]) + (f"; and {len(self.incomplete) - 5} more" if len(self.incomplete) > 5 else "")
+        effect = ("Resources there may be missing from this report, or listed as not in IaC when they are."
+                  if self.source == "aws" else "Drift there may be missing from this report.")
+        return f"Incomplete scan: {shown}. {effect}"
 
     def ignored_line(self) -> str:
         if not self.ignored:
@@ -553,6 +568,8 @@ def render_markdown(r: Report) -> str:
     c = r.counts()
     out = [f"# {'Not in IaC' if r.source == 'aws' else 'Drift report'}: {r.target}", "",
            f"Source: {'AWS account scan' if r.source == 'aws' else r.source} · Generated: {r.generated_at}", ""]
+    if r.incomplete:
+        out += [f"> **Warning:** {_md_cell(r.incomplete_line())}", ""]
     if r.findings:
         out.append(f"**{r.noun()}** · high: {c['high']} · medium: {c['medium']} · low: {c['low']}")
     elif r.source == "aws":
@@ -618,6 +635,7 @@ def render_json(r: Report) -> str:
         "summary": {"total": len(r.findings), **r.counts(), **({"ignored": len(r.ignored)} if r.ignored else {})},
         "stacks_checked": r.checked or None,
         "coverage": r.coverage or None,
+        "incomplete": r.incomplete or None,
         "findings": [_finding_json(f) for f in r.sorted()],
         "ignored": [{"type": f.type, "address": f.address, "physical_id": f.physical_id, "location": f.location,
                      "rule": rule} for f, rule in r.ignored] or None,
@@ -648,6 +666,7 @@ th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute
 .sev.high{color:var(--high);background:var(--high-bg)}.sev.medium{color:var(--med);background:var(--med-bg)}.sev.low{color:var(--low);background:var(--low-bg)}
 code{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);border-radius:4px;padding:1px 4px;word-break:break-word}
 ul.ch{margin:0;padding:0;list-style:none}ul.ch li{margin:0 0 4px}.arrow{color:var(--muted)}.type{color:var(--muted);font-size:13px}
+.warn{background:var(--med-bg);color:var(--ink);border:1px solid var(--med);border-radius:10px;padding:12px 16px;margin:0 0 24px}
 .ok{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
 .note{margin:16px 0 0}.note a,footer a{color:var(--accent)}footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:14px}
 """
@@ -715,7 +734,8 @@ def render_html(r: Report) -> str:
         f"<title>{'Not-in-IaC report' if r.source == 'aws' else 'Drift report'}</title><style>{_HTML_CSS}</style></head><body><main>"
         f"<h1>{'Not in IaC' if r.source == 'aws' else 'Drift report'}: {e(r.target)}</h1>"
         f"<p class=meta>{e('AWS account scan' if r.source == 'aws' else r.source.title())} · generated {e(r.generated_at)} · read-only check by cloud-drift-report {__version__}</p>"
-        f"{body}<footer>{footer_html}</footer></main><script>{_HTML_JS}</script></body></html>\n")
+        + (f"<p class=warn role=alert><strong>Warning:</strong> {e(r.incomplete_line())}</p>" if r.incomplete else "")
+        + f"{body}<footer>{footer_html}</footer></main><script>{_HTML_JS}</script></body></html>\n")
 
 
 def render_driftignore(r: Report) -> str:
@@ -898,10 +918,11 @@ def run_unmanaged(args, log=print) -> Report:
             count += len(entries)
         files = f"{len(docs)} state files, " if len(docs) != 1 else ""
         sources.append(f"{src} ({files}{count} resources)")
+    problems: list[str] = []
     if not args.no_cloudformation:
         stack_total = 0
         for region in regions:
-            entries = inv_mod.stack_entries(session, region, log=log)
+            entries = inv_mod.stack_entries(session, region, log=log, problems=problems)
             stack_total += len(entries)
             iac.extend(entries)
         sources.append(f"CloudFormation stacks in {', '.join(regions)} ({stack_total} resources)")
@@ -922,6 +943,13 @@ def run_unmanaged(args, log=print) -> Report:
         account = session.client("sts").get_caller_identity()["Account"]
     except Exception:
         account = ""
+        problems.append("the AWS account could not be read, so state from other accounts counts as IaC too")
+    gaps = {k: v for k, v in inventory.not_listed.items() if v not in inv_mod.KNOWN_LIMITS}
+    if gaps:
+        first, why = next(iter(gaps.items()))
+        n = len(gaps)
+        problems.insert(0, f"{n} resource type/region pair{'s' if n != 1 else ''} could not be listed "
+                           f"(e.g. {first}: {why}; all in the JSON's coverage.not_listed)")
     for line in (inv_mod.explain(inventory, iac, args.explain, account) if args.explain else []):
         log(line, file=sys.stderr)
     result = inv_mod.match(inventory, iac, account)
@@ -961,7 +989,8 @@ def run_unmanaged(args, log=print) -> Report:
                   "reason": idle[id(res)][0], "monthly_usd": round(idle[id(res)][1], 2)}
                  for res in inventory.resources if id(res) in idle] or None,
     }
-    return Report(findings, "aws", f"{account or 'AWS account'} ({', '.join(regions)})", coverage=coverage)
+    return Report(findings, "aws", f"{account or 'AWS account'} ({', '.join(regions)})", coverage=coverage,
+                  incomplete=problems)
 
 
 def ignore_files(args) -> list[str]:
@@ -990,11 +1019,12 @@ def main(argv: list[str] | None = None) -> int:
             report = run_unmanaged(args)
         else:
             cfn, region = cfn_client(args.profile, args.region, args)
-            findings, statuses = run_cloudformation(cfn, args.stack, region, args.timeout)
+            problems: list[str] = []
+            findings, statuses = run_cloudformation(cfn, args.stack, region, args.timeout, problems=problems)
             if not statuses:
                 print(f"No stacks found in {region}.", file=sys.stderr)
             target = ", ".join(args.stack) if args.stack else f"all stacks in {region}"
-            report = Report(findings, "cloudformation", target, checked=statuses)
+            report = Report(findings, "cloudformation", target, checked=statuses, incomplete=problems)
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1029,6 +1059,8 @@ def main(argv: list[str] | None = None) -> int:
               f"low {c['low']}).", file=sys.stderr)
     if not args.output:
         sys.stdout.write(RENDERERS[args.format](report))
+    if report.incomplete:
+        print(f"warning: {report.incomplete_line()}", file=sys.stderr)
     if args.share:
         share_report(json_paths)
     elif json_paths and report.findings:
