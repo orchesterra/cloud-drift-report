@@ -5,6 +5,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-24
+
 ### Added
 - More idle-and-still-billing checks: an EBS volume attached to nothing (priced per GB-month for its type), a
   load balancer with no registered targets (medium when it has listeners) or a Classic Load Balancer with no
@@ -173,7 +175,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.1...v0.6.2
