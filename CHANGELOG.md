@@ -5,6 +5,13 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- Incomplete-scan warning: when resource types can't be listed, CloudFormation stacks can't be listed or
+  read, the account can't be identified, or a stack's drift check fails, the report starts with a warning
+  that says what was missed and what that means (resources missing, or listed as not in IaC when they
+  are). The JSON has an `incomplete` list, and the same warning is printed at the end of the run. Exit
+  codes don't change.
+
 ### Fixed
 - An `account_id` in state no longer sets the resource's account: on member and sharing types such as
   `aws_guardduty_member`, `aws_ami_launch_permission` and `aws_cloudformation_stack_set_instance` it names

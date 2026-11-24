@@ -297,7 +297,27 @@ def test_cli_unmanaged_report(tmp_path, monkeypatch, capsys):
     cov = doc["coverage"]
     assert (cov["listed"], cov["in_iac"], cov["not_in_iac"], cov["aws_owned_skipped"]) == (5, 3, 2, 2)
     assert cov["not_listed"] == {"AWS::Glue::Job (us-east-1)": "access denied"}
-    assert "2 resources not in IaC" in capsys.readouterr().err
+    # A type that couldn't be listed makes the scan incomplete, and the report says so.
+    assert doc["incomplete"] == ["1 resource type/region pair could not be listed (e.g. AWS::Glue::Job (us-east-1): "
+                                 "access denied; all in the JSON's coverage.not_listed)"]
+    err = capsys.readouterr().err
+    assert "2 resources not in IaC" in err and "warning: Incomplete scan: 1 resource type/region pair" in err
+
+
+def test_unreadable_stacks_make_the_scan_incomplete():
+    def no_stacks(region, **kwargs):
+        raise RuntimeError("AccessDenied: not authorized to perform cloudformation:ListStacks")
+    problems = []
+    assert inv.stack_entries(FakeSession({("cloudformation", "list_stacks"): no_stacks}), "eu-west-1",
+                             log=lambda *a, **k: None, problems=problems) == []
+    assert problems == ["CloudFormation stacks in eu-west-1 could not be listed (access denied)"]
+    report = dr.Report([], "aws", "111 (eu-west-1)", incomplete=problems)
+    md = dr.render_markdown(report)
+    assert "> **Warning:** Incomplete scan: CloudFormation stacks in eu-west-1 could not be listed" in md
+    assert "or listed as not in IaC when they are." in md
+    page = dr.render_html(report)
+    assert "<p class=warn role=alert><strong>Warning:</strong> Incomplete scan:" in page
+    assert "Incomplete" not in dr.render_markdown(dr.Report([], "aws", "x"))
 
 
 def test_markdown_and_html_wording():

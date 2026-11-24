@@ -1214,8 +1214,10 @@ def _which(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def stack_entries(session: Any, region: str, log: Callable[..., None] = print) -> list[IacEntry]:
-    """Every resource in every CloudFormation stack in a region."""
+def stack_entries(session: Any, region: str, log: Callable[..., None] = print,
+                  problems: list[str] | None = None) -> list[IacEntry]:
+    """Every resource in every CloudFormation stack in a region. What can't be read goes in problems."""
+    problems = [] if problems is None else problems
     cfn = session.client("cloudformation", region_name=region)
     out = []
     statuses = ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE", "IMPORT_COMPLETE",
@@ -1224,12 +1226,14 @@ def stack_entries(session: Any, region: str, log: Callable[..., None] = print) -
     try:
         stacks = [s["StackName"] for s in _paginate(cfn, "list_stacks", "StackSummaries", StackStatusFilter=statuses)]
     except Exception as exc:
+        problems.append(f"CloudFormation stacks in {region} could not be listed ({_short_reason(str(exc))})")
         log(f"warning: could not list CloudFormation stacks in {region}: {_short_reason(str(exc))}", file=sys.stderr)
         return out
     for name in stacks:
         try:
             rows = _paginate(cfn, "list_stack_resources", "StackResourceSummaries", StackName=name)
         except Exception as exc:
+            problems.append(f"stack {name} in {region} could not be read ({_short_reason(str(exc))})")
             log(f"warning: could not read stack {name}: {_short_reason(str(exc))}", file=sys.stderr)
             continue
         for row in rows:

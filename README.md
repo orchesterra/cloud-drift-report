@@ -48,7 +48,8 @@ Organizations, Control Tower and StackSets put in member accounts (`Organization
 `AWSControlTower*` and `aws-controltower-*`, `stacksets-exec-*`). They are counted in the report's coverage line
 but not listed as findings; `--strict` lists them too, as low severity with the reason. Types it could not list
 (access denied, or the type needs a parent resource) are named in the JSON output, so you know what was not
-checked.
+checked. When anything couldn't be read (resource types, CloudFormation stacks, the account ID), the report
+starts with an "Incomplete scan" warning that says what was missed; the JSON has the same as `incomplete`.
 
 The coverage line starts with the share of listed resources that are in IaC ("87% in IaC"), and the JSON has
 the same per resource type. If one cloud resource sits at two Terraform addresses (imported twice), the scan

@@ -223,8 +223,12 @@ def test_cloudformation_all_stacks_with_wait_and_paging():
 
 def test_cloudformation_stack_error_does_not_stop_others():
     cfn = FakeCfn({"bad": [], "good": [LAMBDA_DRIFT]}, polls=0, fail={"bad"})
-    findings, statuses = dr.run_cloudformation(cfn, ["bad", "good"], "", sleep=lambda s: None, log=lambda *a, **k: None)
+    problems = []
+    findings, statuses = dr.run_cloudformation(cfn, ["bad", "good"], "", sleep=lambda s: None, log=lambda *a, **k: None,
+                                               problems=problems)
     assert statuses["bad"].startswith("ERROR") and statuses["good"] == "DRIFTED"
+    assert len(problems) == 1 and problems[0].startswith("stack bad was not checked")
+    assert json.loads(dr.render_json(dr.Report(findings, "cloudformation", "x", incomplete=problems)))["incomplete"] == problems
     assert [f.address for f in findings] == ["WebhookFunction"]
 
 
