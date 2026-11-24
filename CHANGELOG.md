@@ -5,6 +5,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-24
+
 ### Fixed
 - A region the account hasn't enabled (an opt-in region such as me-south-1) or a misspelt region now stops the
   run at once with a clear message. It used to hang for minutes on each call. `--all-regions` asks us-east-1
@@ -147,7 +149,8 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.0...v0.6.1
