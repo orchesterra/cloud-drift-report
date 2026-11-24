@@ -700,3 +700,93 @@ def test_disabled_or_unknown_region_stops_before_the_scan():
     notes = []
     inv.check_regions(FakeSession({}), ["me-south-1"], log=lambda m, **k: notes.append(m))  # can't check: scan as asked
     assert notes and notes[0].startswith("note: could not check which regions are enabled")
+
+
+def _days_ago(n):
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone.utc) - timedelta(days=n)
+
+
+IDLE_MORE = {
+    ("ec2", "describe_volumes"): {"Volumes": [
+        {"VolumeId": "vol-spare", "State": "available", "Size": 100, "VolumeType": "gp3", "CreateTime": _days_ago(40)},
+        {"VolumeId": "vol-new", "State": "available", "Size": 100, "VolumeType": "gp3", "CreateTime": _days_ago(1)},
+        {"VolumeId": "vol-used", "State": "in-use", "Size": 8, "VolumeType": "gp3", "CreateTime": _days_ago(40),
+         "Attachments": [{"InstanceId": "i-1", "DeleteOnTermination": False}]}]},
+    ("ec2", "describe_snapshots"): lambda region, OwnerIds, **kw: {"Snapshots": [
+        {"SnapshotId": "snap-orphan", "VolumeId": "vol-deleted", "VolumeSize": 50, "StartTime": _days_ago(200),
+         "FullSnapshotSizeInBytes": 20 * 2**30},
+        {"SnapshotId": "snap-ami", "VolumeId": "vol-deleted", "VolumeSize": 8, "StartTime": _days_ago(200)},
+        {"SnapshotId": "snap-live-vol", "VolumeId": "vol-used", "VolumeSize": 8, "StartTime": _days_ago(200)},
+        {"SnapshotId": "snap-backup", "VolumeId": "vol-gone", "VolumeSize": 8, "StartTime": _days_ago(200),
+         "Tags": [{"Key": "aws:backup:source-resource", "Value": "x"}]},
+        {"SnapshotId": "snap-recent", "VolumeId": "vol-gone", "VolumeSize": 8, "StartTime": _days_ago(10)},
+        {"SnapshotId": "snap-archived", "VolumeId": "vol-gone", "VolumeSize": 8, "StartTime": _days_ago(200),
+         "StorageTier": "archive"}]},
+    ("ec2", "describe_images"): lambda region, Owners, **kw: {"Images": [
+        {"ImageId": "ami-1", "BlockDeviceMappings": [{"Ebs": {"SnapshotId": "snap-ami"}}]}]},
+    ("elbv2", "describe_load_balancers"): {"LoadBalancers": [
+        {"LoadBalancerArn": "arn:lb/app/empty", "LoadBalancerName": "empty", "Type": "application", "CreatedTime": _days_ago(30)},
+        {"LoadBalancerArn": "arn:lb/app/redirect", "LoadBalancerName": "redirect", "Type": "application", "CreatedTime": _days_ago(30)},
+        {"LoadBalancerArn": "arn:lb/net/busy", "LoadBalancerName": "busy", "Type": "network", "CreatedTime": _days_ago(30)}]},
+    ("elbv2", "describe_tags"): {"TagDescriptions": []},
+    ("elbv2", "describe_listeners"): lambda region, LoadBalancerArn, **kw: {"Listeners": [
+        {"ListenerArn": "l"}] if LoadBalancerArn != "arn:lb/app/empty" else []},
+    ("elbv2", "describe_target_groups"): {"TargetGroups": [
+        {"TargetGroupArn": "tg-busy", "LoadBalancerArns": ["arn:lb/net/busy"]},
+        {"TargetGroupArn": "tg-empty", "LoadBalancerArns": ["arn:lb/app/redirect"]}]},
+    ("elbv2", "describe_target_health"): lambda region, TargetGroupArn, **kw: {"TargetHealthDescriptions": [
+        {"Target": {"Id": "i-1"}}] if TargetGroupArn == "tg-busy" else []},
+    ("elb", "describe_load_balancers"): {"LoadBalancerDescriptions": [
+        {"LoadBalancerName": "old-clb", "Instances": [], "CreatedTime": _days_ago(400)},
+        {"LoadBalancerName": "live-clb", "Instances": [{"InstanceId": "i-1"}], "CreatedTime": _days_ago(400)}]},
+}
+
+
+def test_unattached_volume_empty_load_balancer_and_abandoned_snapshot():
+    vols = {r["Identifier"]: _live("aws_ebs_volume", r["Identifier"], **r["Properties"])
+            for r in inv._volumes(FakeSession(IDLE_MORE), "us-east-1")}
+    assert inv.idle_reason(vols["vol-spare"]) == ("attached to nothing; this 100 GB gp3 volume still bills about "
+                                                  "$8.00/month for storage (us-east-1 list price used where the live "
+                                                  "us-east-1 price could not be read)")
+    assert inv.idle_reason(vols["vol-new"]) == "" and inv.idle_reason(vols["vol-used"]) == ""
+
+    lbs = {r["Properties"]["LoadBalancerName"]: _live("aws_lb", r["Identifier"], **r["Properties"])
+           for r in inv._load_balancers(FakeSession(IDLE_MORE), "us-east-1")}
+    assert inv.idle_reason(lbs["empty"]).startswith("no listeners and no registered targets; a load balancer still "
+                                                    "bills about $16.43/month")
+    assert inv.idle_reason(lbs["redirect"]).startswith("it has 1 listener but no registered targets, so it can only "
+                                                       "redirect or return fixed responses")
+    assert inv.idle_reason(lbs["busy"]) == ""
+    assert (inv.idle_label(lbs["empty"]), inv.idle_label(lbs["redirect"])) == ("idle", "probably unused")
+
+    clbs = {r["Identifier"]: _live("aws_elb", r["Identifier"], **r["Properties"])
+            for r in inv._classic_elbs(FakeSession(IDLE_MORE), "us-east-1")}
+    assert "$18.25/month" in inv.idle_reason(clbs["old-clb"]) and inv.idle_reason(clbs["live-clb"]) == ""
+
+    snaps = inv._snapshots(FakeSession(IDLE_MORE), "us-east-1")
+    assert [r["Identifier"] for r in snaps] == ["snap-orphan"]  # AMI, live volume, Backup, recent, archived: kept out
+    snap = _live("aws_ebs_snapshot", "snap-orphan", **snaps[0]["Properties"])
+    assert inv.idle_reason(snap).startswith("200 days old, its volume vol-deleted is gone and no AMI uses it; it bills "
+                                            "up to about $1.00/month for 20 GB")
+    assert inv.idle_label(snap) == "probably abandoned"
+
+
+def test_load_balancer_usage_unreadable_says_nothing():
+    data = dict(IDLE_MORE)
+    data[("elbv2", "describe_listeners")] = _denied
+    lbs = inv._load_balancers(FakeSession(data), "us-east-1")
+    assert all("Targets" not in r["Properties"] for r in lbs)
+    assert all(inv.idle_reason(_live("aws_lb", r["Identifier"], **r["Properties"])) == "" for r in lbs)
+
+
+def test_ebs_and_load_balancer_prices_are_read_per_region():
+    def products(region, ServiceCode, Filters, **kw):
+        where = {f["Field"]: f["Value"] for f in Filters}
+        assert where["regionCode"] == "ap-south-1"
+        if ServiceCode == "AWSELB":
+            return {"PriceList": [_price("APS3-Outposts-LoadBalancerUsage", "1"), _price("APS3-LoadBalancerUsage", "0.0239")]}
+        return {"PriceList": [_price("APS3-EBS:VolumeUsage.gp3", "0.0912")]}
+    prices = inv.Prices(FakeSession({("pricing", "get_products"): products}))
+    assert prices.rate("ebs:gp3", "ap-south-1") == (0.0912, True)
+    assert prices.rate("alb", "ap-south-1") == (0.0239, True)

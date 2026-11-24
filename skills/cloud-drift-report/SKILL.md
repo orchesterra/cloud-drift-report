@@ -68,7 +68,10 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
      when a stack that wasn't read manages them.
    - If the coverage line says "Idle and still billing", name each one and its monthly cost: a NAT gateway no
      route uses, one a route uses that moved under 1 GB in 14 days ("nearly unused": ask whether it is a
-     standby before suggesting removal), or an Elastic IP attached to nothing. Ones marked "(in IaC)" are removed in code, not in AWS.
+     standby before suggesting removal), an Elastic IP or EBS volume attached to nothing, a load balancer with no
+     registered targets ("probably unused" when it has listeners: it may only redirect), or an old snapshot whose
+     volume is gone ("probably abandoned": ask whether it is a kept backup). Ones marked "(in IaC)" are removed in
+     code, not in AWS.
   Costs are that region's list prices; if the finding says "us-east-1 list price used", the Price List API could
   not be read (it needs `pricing:GetProducts`), so the real cost may differ.
 5. Show the Markdown summary in chat: the counts by severity first, then the high rows.

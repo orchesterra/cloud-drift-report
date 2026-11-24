@@ -5,6 +5,13 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- More idle-and-still-billing checks: an EBS volume attached to nothing (priced per GB-month for its type), a
+  load balancer with no registered targets (medium when it has listeners) or a Classic Load Balancer with no
+  instances, and EBS snapshots that look abandoned (older than 90 days, volume gone, no AMI uses them, not
+  from AWS Backup or Data Lifecycle Manager; medium). Snapshots are listed only when they look abandoned.
+  Volumes and load balancers younger than 7 days aren't judged. Prices are live per region.
+
 ## [0.7.1] - 2026-11-24
 
 ### Fixed

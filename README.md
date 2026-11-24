@@ -60,6 +60,11 @@ The scan also flags what costs money while doing nothing: a NAT gateway that no 
 attached to nothing (about $3.65 a month). A NAT gateway that routes do point at, but that moved under
 1 GB in the last 14 days (CloudWatch `BytesOutToDestination` plus `BytesInFromDestination`), is flagged as
 nearly unused, at medium severity since it may be a standby; gateways younger than 14 days aren't judged.
+It also flags an EBS volume attached to nothing (priced per GB for its volume type), a load balancer with no
+registered targets (medium when it has listeners, since it may only redirect) or a Classic Load Balancer with
+no instances, and EBS snapshots that look abandoned: older than 90 days, their volume gone, no AMI of yours
+using them, and not made by AWS Backup or Data Lifecycle Manager (medium; snapshots are only listed when they
+look like this). Volumes and load balancers younger than 7 days aren't judged.
 Costs use that region's on-demand rates from the AWS Price List API
 (`pricing:GetProducts`); if it can't be read, the us-east-1 list price is used and the finding says so. One
 that is also not in IaC is reported at high severity with the cost in its explanation; ones your Terraform

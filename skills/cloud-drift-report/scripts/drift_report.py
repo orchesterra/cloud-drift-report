@@ -975,9 +975,9 @@ def run_unmanaged(args, log=print) -> Report:
             f.severity = "low"
             f.explanation = f"AWS created this ({owned[id(res)]}); shown because of --strict."
         elif id(res) in idle:  # costs money for nothing, and nobody's code owns it
-            quiet = res.props.get("Routed") is True  # routed but nearly unused: likely idle, not certain
-            f.severity = "medium" if quiet else "high"
-            f.explanation = f"Not in IaC and {'nearly unused' if quiet else 'idle'}: {idle[id(res)][0]}."
+            label = inv_mod.idle_label(res)  # anything short of certainly idle is medium
+            f.severity = "high" if label == "idle" else "medium"
+            f.explanation = f"Not in IaC and {label}: {idle[id(res)][0]}."
         findings.append(f)
     duplicates = inv_mod.duplicate_imports(iac)
     for d in duplicates:

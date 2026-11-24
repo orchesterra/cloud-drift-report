@@ -40,6 +40,7 @@ CLOUDCONTROL_TO_TERRAFORM: dict[str, str] = {
     "AWS::EC2::RouteTable": "aws_route_table",
     "AWS::EC2::NetworkAcl": "aws_network_acl",
     "AWS::EC2::Volume": "aws_ebs_volume",
+    "AWS::EC2::Snapshot": "aws_ebs_snapshot",  # listed natively, and only when it looks abandoned
     "AWS::EC2::VPCEndpoint": "aws_vpc_endpoint",
     "AWS::S3::Bucket": "aws_s3_bucket",
     "AWS::Lambda::Function": "aws_lambda_function",
@@ -504,7 +505,38 @@ def _volumes(s, r):
     for v in _paginate(ec2, "describe_volumes", "Volumes"):
         # A volume launched with an instance (root or block-device mapping) is part of that instance.
         with_instance = any(a.get("DeleteOnTermination") for a in v.get("Attachments") or [])
-        out.append({"Identifier": v["VolumeId"], "Properties": {"LaunchedWithInstance": with_instance, "Tags": v.get("Tags") or []}})
+        out.append({"Identifier": v["VolumeId"], "Properties": {
+            "LaunchedWithInstance": with_instance, "State": v.get("State"), "Size": v.get("Size"),
+            "VolumeType": v.get("VolumeType"), "CreateTime": v.get("CreateTime"), "Tags": v.get("Tags") or []}})
+    return out
+
+
+ABANDONED_SNAPSHOT_DAYS = 90
+
+
+def _snapshots(s, r):
+    """Only snapshots that look abandoned: listing every snapshot would bury the report (most never are in IaC).
+    Abandoned: this account's, older than ABANDONED_SNAPSHOT_DAYS, its volume gone, no AMI of this account
+    uses it, standard tier, and not made by AWS Backup or Data Lifecycle Manager."""
+    from datetime import datetime, timedelta, timezone
+    ec2 = s.client("ec2", region_name=r)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ABANDONED_SNAPSHOT_DAYS)
+    snapshots = [x for x in _paginate(ec2, "describe_snapshots", "Snapshots", OwnerIds=["self"])
+                 if x.get("StartTime") and x["StartTime"] <= cutoff and x.get("StorageTier", "standard") == "standard"]
+    if not snapshots:
+        return []
+    volumes = {v["VolumeId"] for v in _paginate(ec2, "describe_volumes", "Volumes")}
+    in_ami = {m["Ebs"]["SnapshotId"] for image in _paginate(ec2, "describe_images", "Images", Owners=["self"])
+              for m in image.get("BlockDeviceMappings") or [] if (m.get("Ebs") or {}).get("SnapshotId")}
+    out = []
+    for x in snapshots:
+        tags = {t.get("Key"): t.get("Value") for t in x.get("Tags") or []}
+        if x["SnapshotId"] in in_ami or x.get("VolumeId") in volumes or any(
+                k.startswith(("aws:backup:", "aws:dlm:")) for k in tags) or "AWS Backup" in str(x.get("Description")):
+            continue
+        out.append({"Identifier": x["SnapshotId"], "Properties": {
+            "Abandoned": True, "VolumeSize": x.get("VolumeSize"), "FullSnapshotSizeInBytes": x.get("FullSnapshotSizeInBytes"),
+            "StartTime": x["StartTime"], "VolumeId": x.get("VolumeId"), "Tags": x.get("Tags") or []}})
     return out
 
 
@@ -610,7 +642,8 @@ def _elasticache_clusters(s, r):
 
 def _classic_elbs(s, r):
     elb = s.client("elb", region_name=r)
-    return [{"Identifier": x["LoadBalancerName"], "Properties": {}}
+    return [{"Identifier": x["LoadBalancerName"], "Properties": {
+        "Instances": len(x.get("Instances") or []), "CreateTime": x.get("CreatedTime")}}
             for x in _paginate(elb, "describe_load_balancers", "LoadBalancerDescriptions")]
 
 
@@ -646,9 +679,30 @@ def _load_balancers(s, r):
     elb = s.client("elbv2", region_name=r)
     lbs = _paginate(elb, "describe_load_balancers", "LoadBalancers")
     tags = _elbv2_tags(elb, [lb["LoadBalancerArn"] for lb in lbs])
+    usage = _lb_usage(elb, lbs)
     return [{"Identifier": lb["LoadBalancerArn"], "Properties": {
         "LoadBalancerArn": lb["LoadBalancerArn"], "LoadBalancerName": lb.get("LoadBalancerName"),
+        "Type": lb.get("Type"), "CreateTime": lb.get("CreatedTime"), **usage.get(lb["LoadBalancerArn"], {}),
         "Tags": tags.get(lb["LoadBalancerArn"], [])}} for lb in lbs]
+
+
+def _lb_usage(elb, lbs) -> dict[str, dict[str, int]]:
+    """Listeners and registered targets per load balancer; empty when they can't be read (then say nothing)."""
+    try:
+        out = {lb["LoadBalancerArn"]: {"Listeners": len(_paginate(elb, "describe_listeners", "Listeners",
+                                                                   LoadBalancerArn=lb["LoadBalancerArn"])), "Targets": 0}
+               for lb in lbs if lb.get("Type") in ("application", "network")}
+        if not out:
+            return {}
+        for group in _paginate(elb, "describe_target_groups", "TargetGroups"):
+            arns = [a for a in group.get("LoadBalancerArns") or [] if a in out]
+            if arns:
+                n = len(elb.describe_target_health(TargetGroupArn=group["TargetGroupArn"]).get("TargetHealthDescriptions") or [])
+                for a in arns:
+                    out[a]["Targets"] += n
+        return out
+    except Exception:
+        return {}
 
 
 def _target_groups(s, r):
@@ -732,6 +786,7 @@ NATIVE_LISTERS: dict[str, Callable[[Any, str], list[dict[str, Any]]]] = {
     "AWS::EC2::EIP": _elastic_ips,
     "AWS::EC2::Instance": _instances,
     "AWS::EC2::Volume": _volumes,
+    "AWS::EC2::Snapshot": _snapshots,
     "AWS::EC2::VPCEndpoint": _vpc_endpoints,
     "AWS::S3::Bucket": _buckets,
     "AWS::IAM::Role": _iam_roles,
@@ -1006,11 +1061,22 @@ def _short_reason(text: str) -> str:
 # read (no pricing:GetProducts, no network), the us-east-1 list prices below are used and the text says so.
 
 HOURS_PER_MONTH = 730
-_US_EAST_1_HOURLY = {"nat": 0.045, "ipv4_in_use": 0.005, "ipv4_idle": 0.005}
+# Per hour, except EBS volumes and snapshots: per GB-month.
+_US_EAST_1_RATES = {"nat": 0.045, "ipv4_in_use": 0.005, "ipv4_idle": 0.005, "alb": 0.0225, "nlb": 0.0225, "clb": 0.025,
+                    "snapshot": 0.05, "ebs:gp3": 0.08, "ebs:gp2": 0.10, "ebs:io1": 0.125, "ebs:io2": 0.125,
+                    "ebs:st1": 0.045, "ebs:sc1": 0.015, "ebs:standard": 0.05}
+_EBS_USAGE = {"gp3": "EBS:VolumeUsage.gp3", "gp2": "EBS:VolumeUsage.gp2", "io1": "EBS:VolumeUsage.piops",
+              "io2": "EBS:VolumeUsage.io2", "st1": "EBS:VolumeUsage.st1", "sc1": "EBS:VolumeUsage.sc1",
+              "standard": "EBS:VolumeUsage"}
 _PRICE_QUERIES = {  # kind -> (service code, usage type without its region prefix, extra filters)
     "nat": ("AmazonEC2", "NatGateway-Hours", {"productFamily": "NAT Gateway", "operation": "NatGateway"}),
     "ipv4_in_use": ("AmazonVPC", "PublicIPv4:InUseAddress", {"group": "VPCPublicIPv4Address"}),
     "ipv4_idle": ("AmazonVPC", "PublicIPv4:IdleAddress", {"group": "VPCPublicIPv4Address"}),
+    "alb": ("AWSELB", "LoadBalancerUsage", {"productFamily": "Load Balancer-Application"}),
+    "nlb": ("AWSELB", "LoadBalancerUsage", {"productFamily": "Load Balancer-Network"}),
+    "clb": ("AWSELB", "LoadBalancerUsage", {"productFamily": "Load Balancer"}),
+    "snapshot": ("AmazonEC2", "EBS:SnapshotUsage", {"productFamily": "Storage Snapshot"}),
+    **{f"ebs:{t}": ("AmazonEC2", u, {"productFamily": "Storage", "volumeApiName": t}) for t, u in _EBS_USAGE.items()},
 }
 
 
@@ -1052,7 +1118,7 @@ class Prices:
                         return usd
         return None
 
-    def hourly(self, kind: str, region: str) -> tuple[float, bool]:
+    def rate(self, kind: str, region: str) -> tuple[float, bool]:
         """(rate, True) from the Price List API, or (us-east-1 rate, False) when it couldn't be read."""
         if not self.failed and (kind, region) not in self._cache:
             try:
@@ -1062,14 +1128,14 @@ class Prices:
                 self._log(f"note: could not read AWS prices ({_short_reason(str(exc))}); idle costs use us-east-1 list prices. "
                           "Live prices need pricing:GetProducts (in ReadOnlyAccess).", file=sys.stderr)
         rate = self._cache.get((kind, region))
-        return (rate, True) if rate else (_US_EAST_1_HOURLY[kind], False)
+        return (rate, True) if rate else (_US_EAST_1_RATES[kind], False)
 
 
 def _nat_monthly(p: dict, region: str, prices: Prices) -> tuple[float, str, bool]:
     """(monthly USD, the gateway/address split or "", whether every price was live) for a NAT gateway."""
-    nat, live = prices.hourly("nat", region)
+    nat, live = prices.rate("nat", region)
     ips = int(p.get("PublicIps") or 0)
-    ip, ip_live = prices.hourly("ipv4_in_use", region) if ips else (0.0, live)
+    ip, ip_live = prices.rate("ipv4_in_use", region) if ips else (0.0, live)
     gateway, addresses = nat * HOURS_PER_MONTH, ip * HOURS_PER_MONTH * ips
     split = ""
     if ips:  # each public IPv4 address on it is billed too (since February 2024)
@@ -1099,10 +1165,65 @@ def idle_cost(res: LiveResource, prices: Prices | None = None) -> tuple[str, flo
                f"a NAT gateway that quiet still bills about ${monthly:.2f}/month")
         return why + split + _price_note(region, live), monthly
     if res.tf_type == "aws_eip" and p.get("Attached") is False and not p.get("ServiceManaged"):
-        ip, live = prices.hourly("ipv4_idle", region)
+        ip, live = prices.rate("ipv4_idle", region)
         monthly = ip * HOURS_PER_MONTH
         return f"attached to nothing; an Elastic IP still bills about ${monthly:.2f}/month" + _price_note(region, live), monthly
+    if _young(p.get("CreateTime")):
+        return None  # a new volume or load balancer may simply not be in use yet
+    if res.tf_type == "aws_ebs_volume" and p.get("State") == "available" and p.get("Size"):
+        kind = f"ebs:{p.get('VolumeType')}" if f"ebs:{p.get('VolumeType')}" in _US_EAST_1_RATES else "ebs:gp2"
+        gb_month, live = prices.rate(kind, region)
+        monthly = gb_month * float(p["Size"])
+        return (f"attached to nothing; this {p['Size']} GB {p.get('VolumeType') or ''} volume still bills about "
+                f"${monthly:.2f}/month for storage" + _price_note(region, live), monthly)
+    if res.tf_type in ("aws_lb", "aws_alb") and p.get("Targets") == 0 and p.get("Type") in ("application", "network"):
+        hourly, live = prices.rate("alb" if p["Type"] == "application" else "nlb", region)
+        monthly = hourly * HOURS_PER_MONTH
+        n = int(p.get("Listeners") or 0)
+        what = (f"it has {n} listener{'s' if n != 1 else ''} but no registered targets, so it can only redirect or "
+                "return fixed responses" if n else "no listeners and no registered targets")
+        return f"{what}; a load balancer still bills about ${monthly:.2f}/month" + _price_note(region, live), monthly
+    if res.tf_type == "aws_elb" and p.get("Instances") == 0:
+        hourly, live = prices.rate("clb", region)
+        monthly = hourly * HOURS_PER_MONTH
+        return (f"no instances registered; a Classic Load Balancer still bills about ${monthly:.2f}/month"
+                + _price_note(region, live), monthly)
+    if res.tf_type == "aws_ebs_snapshot" and p.get("Abandoned"):
+        gb_month, live = prices.rate("snapshot", region)
+        full = p.get("FullSnapshotSizeInBytes")
+        gb = float(full) / 2**30 if full else float(p.get("VolumeSize") or 0)
+        monthly = gb_month * gb
+        days = _age_days(p.get("StartTime"))
+        return (f"{days} days old, its volume {p.get('VolumeId') or ''} is gone and no AMI uses it; it bills up to about "
+                f"${monthly:.2f}/month for {gb:.0f} GB (less if it shares blocks with other snapshots)"
+                + _price_note(region, live), monthly)
     return None
+
+
+IDLE_MIN_AGE_DAYS = 7
+
+
+def _age_days(created: Any) -> int:
+    from datetime import datetime, timezone
+    if not isinstance(created, datetime):
+        return 0
+    return (datetime.now(timezone.utc) - (created if created.tzinfo else created.replace(tzinfo=timezone.utc))).days
+
+
+def _young(created: Any) -> bool:
+    return created is not None and _age_days(created) < IDLE_MIN_AGE_DAYS
+
+
+def idle_label(res: LiveResource) -> str:
+    """"idle" when it certainly does nothing; a softer word when it probably doesn't (found at medium severity)."""
+    p = res.props
+    if res.tf_type == "aws_nat_gateway" and p.get("Routed"):
+        return "nearly unused"
+    if res.tf_type in ("aws_lb", "aws_alb") and p.get("Listeners"):
+        return "probably unused"
+    if res.tf_type == "aws_ebs_snapshot":
+        return "probably abandoned"
+    return "idle"
 
 
 def _price_note(region: str, live: bool) -> str:
