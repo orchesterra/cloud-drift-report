@@ -417,3 +417,165 @@ def test_config_paths_are_relative_to_the_file(tmp_path, monkeypatch):
     args, path = dr.apply_config(parser, argv, parser.parse_args(argv))
     assert path == "infra/.driftreport.yml"
     assert args.var_file == ["infra/prod.tfvars"] and args.output == ["infra/drift.md"]
+
+
+# --- state source and module ------------------------------------------------
+
+MODULE_PLAN = {"format_version": "1.2", "resource_drift": [
+    {"address": 'module.network.module.subnets.aws_subnet.private["a.b"]', "module_address": "module.network.module.subnets",
+     "type": "aws_subnet", "name": "private",
+     "change": {"actions": ["update"], "before": {"id": "subnet-1", "map_public_ip_on_launch": False},
+                "after": {"id": "subnet-1", "map_public_ip_on_launch": True}}},
+    {"address": "aws_instance.worker", "type": "aws_instance", "name": "worker",
+     "change": {"actions": ["update"], "before": {"id": "i-1", "instance_type": "t3.small"},
+                "after": {"id": "i-1", "instance_type": "t3.large"}}},
+]}
+
+
+def test_split_address_and_module_of():
+    assert dr.split_address('module.a["x.y"].aws_s3_bucket.b[0]') == ["module", 'a["x.y"]', "aws_s3_bucket", "b[0]"]
+    assert dr.module_of('module.a["x.y"].module.b.aws_s3_bucket.c') == 'module.a["x.y"].module.b'
+    assert dr.module_of("aws_s3_bucket.c") == ""
+    log = [json.dumps({"type": "resource_drift", "change": {"action": "update", "resource": {
+        "addr": "module.db.aws_db_instance.main", "module": "module.db", "resource_type": "aws_db_instance"}}})]
+    assert dr.parse_json_log(log)[0].module == "module.db"
+
+
+def _tf_dir(tmp_path, backend, workspace=None):
+    (tmp_path / "main.tf").write_text(f'terraform {{\n  {backend}\n}}\n\nresource "aws_instance" "worker" {{\n}}\n')
+    (tmp_path / ".terraform").mkdir()
+    if workspace:
+        (tmp_path / ".terraform" / "environment").write_text(workspace)
+    return str(tmp_path)
+
+
+def test_state_source_of_backends(tmp_path, monkeypatch):
+    monkeypatch.delenv("TF_WORKSPACE", raising=False)
+    (tmp_path / "s3").mkdir()
+    s3 = _tf_dir(tmp_path / "s3", 'backend "s3" {\n    bucket = "acme-tf"\n    key = "net/terraform.tfstate"\n  }', "prod")
+    assert dr.state_source_of(s3) == "s3://acme-tf/env:/prod/net/terraform.tfstate"
+    (tmp_path / "s3" / ".terraform" / "environment").write_text("default")
+    assert dr.state_source_of(s3) == "s3://acme-tf/net/terraform.tfstate"
+    (tmp_path / "hcp").mkdir()
+    hcp = _tf_dir(tmp_path / "hcp", 'cloud {\n    organization = "acme"\n    workspaces {\n      name = "net-prod"\n    }\n  }')
+    assert dr.state_source_of(hcp) == "app.terraform.io/acme/net-prod"
+    (tmp_path / "local").mkdir()
+    local = _tf_dir(tmp_path / "local", "", "dev")
+    monkeypatch.chdir(tmp_path)
+    assert dr.state_source_of(local) == os.path.join("local", "terraform.tfstate.d", "dev", "terraform.tfstate")
+
+
+def test_reports_show_state_source_and_module():
+    findings = dr.parse_plan_json(MODULE_PLAN, location="./infra")
+    for f in findings:
+        f.state_source = "s3://acme-tf/env:/prod/terraform.tfstate"
+    r = dr.Report(findings, "terraform", "./infra")
+    md = dr.render_markdown(r)
+    assert "in state: s3://acme-tf/env:/prod/terraform.tfstate, module.network.module.subnets" in md
+    assert "in state: s3://acme-tf/env:/prod/terraform.tfstate |" in md  # root module: no module named
+    assert "in state: s3://acme-tf/env:/prod/terraform.tfstate, module.network.module.subnets" in dr.render_html(r)
+    doc = json.loads(dr.render_json(r))
+    sub = next(f for f in doc["findings"] if f["type"] == "aws_subnet")
+    assert (sub["state_source"], sub["module"]) == ("s3://acme-tf/env:/prod/terraform.tfstate",
+                                                    "module.network.module.subnets")
+    assert "kind" not in sub
+    rows = list(csv.DictReader(io.StringIO(dr.render_csv(r))))
+    assert rows[0]["state_source"] == "s3://acme-tf/env:/prod/terraform.tfstate"
+    cfn = dr.Finding("cloudformation", "stack (us-east-1)", "Bucket", "AWS::S3::Bucket", dr.DELETED)
+    assert "state_source" not in json.loads(dr.render_json(dr.Report([cfn], "cloudformation", "x")))["findings"][0]
+
+
+# --- SARIF ----------------------------------------------------------------------
+
+def _check_sarif_shape(doc):
+    """The parts of the SARIF 2.1.0 schema GitHub code scanning relies on."""
+    assert doc["version"] == "2.1.0" and doc["$schema"].endswith("sarif-2.1.0.json")
+    (run,) = doc["runs"]
+    driver = run["tool"]["driver"]
+    assert driver["name"] == "cloud-drift-report" and driver["version"] == dr.__version__
+    ids = [rule["id"] for rule in driver["rules"]]
+    assert len(ids) == len(set(ids))
+    for rule in driver["rules"]:
+        assert rule["shortDescription"]["text"] and rule["fullDescription"]["text"]
+        assert rule["defaultConfiguration"]["level"] in ("error", "warning", "note")
+    for res in run["results"]:
+        assert ids[res["ruleIndex"]] == res["ruleId"]
+        assert res["level"] in ("error", "warning", "note", "none")
+        assert isinstance(res["message"]["text"], str) and res["message"]["text"]
+        assert res["locations"], "GitHub rejects results without a location"
+        for loc in res["locations"]:
+            uri = loc["physicalLocation"]["artifactLocation"]["uri"]
+            assert isinstance(uri, str) and uri and not uri.startswith("/")
+            if "region" in loc["physicalLocation"]:
+                assert loc["physicalLocation"]["region"]["startLine"] >= 1
+            for logical in loc.get("logicalLocations", []):
+                assert logical["name"]
+        assert all(isinstance(v, str) and v for v in res["partialFingerprints"].values())
+    return run
+
+
+def test_sarif_shape_levels_and_stable_fingerprints(report):
+    run = _check_sarif_shape(json.loads(dr.render_sarif(report)))
+    by_addr = {r["properties"]["address"]: r for r in run["results"]}
+    sg = by_addr["aws_security_group.web"]
+    assert sg["ruleId"] == "drift/changed-outside-iac" and sg["level"] == "error"
+    assert "0.0.0.0/0" in sg["message"]["text"] and sg["message"]["text"].startswith("HIGH: aws_security_group.web")
+    assert by_addr["aws_s3_bucket.logs"]["level"] == "note"
+    assert by_addr["aws_sqs_queue.jobs"]["ruleId"] == "drift/deleted-outside-iac"
+    later = dr.Report(dr.load_plan_file(str(FIXTURE)), "terraform", "./infra", generated_at="2026-12-01 10:00 UTC")
+    later.findings[0].explanation = "worded differently"
+    again = {r["properties"]["address"]: r["partialFingerprints"] for r in json.loads(dr.render_sarif(later))["runs"][0]["results"]}
+    assert again == {a: r["partialFingerprints"] for a, r in by_addr.items()}
+    assert len({json.dumps(v) for v in again.values()}) == len(again)
+
+
+def test_sarif_points_at_the_declaring_tf_file(tmp_path, monkeypatch):
+    (tmp_path / "main.tf").write_text('# web tier\n\nresource "aws_instance" "worker" {\n  instance_type = "t3.small"\n}\n')
+    mod = tmp_path / "modules" / "subnets"
+    mod.mkdir(parents=True)
+    (mod / "subnets.tf").write_text('variable "x" {}\n\nresource  "aws_subnet"   "private" {\n}\n')
+    (tmp_path / ".terraform" / "modules").mkdir(parents=True)
+    (tmp_path / ".terraform" / "modules" / "modules.json").write_text(json.dumps({"Modules": [
+        {"Key": "", "Dir": "."}, {"Key": "network", "Dir": "modules/network"},
+        {"Key": "network.subnets", "Dir": "modules/subnets"}]}))
+    monkeypatch.chdir(tmp_path)
+    r = dr.Report(dr.parse_plan_json(MODULE_PLAN, location=str(tmp_path)), "terraform", str(tmp_path), code_dir=str(tmp_path))
+    run = _check_sarif_shape(json.loads(dr.render_sarif(r)))
+    locs = {res["properties"]["address"]: res["locations"][0]["physicalLocation"] for res in run["results"]}
+    assert locs["aws_instance.worker"] == {"artifactLocation": {"uri": "main.tf"}, "region": {"startLine": 3}}
+    assert locs['module.network.module.subnets.aws_subnet.private["a.b"]'] == {
+        "artifactLocation": {"uri": "modules/subnets/subnets.tf"}, "region": {"startLine": 3}}
+    # without modules.json, a module resource is found only when one file under the directory declares it
+    (tmp_path / ".terraform" / "modules" / "modules.json").unlink()
+    assert dr.find_declaration(str(tmp_path), 'module.network.module.subnets.aws_subnet.private["a.b"]') == (
+        str(mod / "subnets.tf"), 3)
+    (tmp_path / "other.tf").write_text('resource "aws_subnet" "private" {}\n')
+    assert dr.find_declaration(str(tmp_path), "module.network.aws_subnet.private") is None
+
+
+def test_sarif_for_resources_outside_the_repository():
+    cfn = dr.finalize(dr.Finding("cloudformation", "payments (us-east-1)", "Queue", "AWS::SQS::Queue", dr.DELETED,
+                                 physical_id="https://sqs/q"))
+    aws = dr.finalize(dr.Finding("aws", "us-east-1", "acme-tmp", "aws_s3_bucket", dr.UNMANAGED,
+                                 physical_id="arn:aws:s3:::acme-tmp"))
+    owned = dr.finalize(dr.Finding("aws", "global", "AWSServiceRoleForSupport", "aws_iam_role", dr.UNMANAGED,
+                                   physical_id="arn:aws:iam::1:role/x", kind="aws-created"))
+    remote = dr.finalize(dr.Finding("terraform", "/nonexistent/infra", "aws_s3_bucket.b", "aws_s3_bucket", dr.DELETED,
+                                    state_source="s3://acme-tf/terraform.tfstate"))
+    for f, rule in ((cfn, "drift/deleted-outside-iac"), (aws, "drift/not-in-iac"), (owned, "drift/aws-created"),
+                    (remote, "drift/deleted-outside-iac")):
+        run = _check_sarif_shape(json.loads(dr.render_sarif(dr.Report([f], f.source, "x"))))
+        (res,) = run["results"]
+        assert res["ruleId"] == rule
+        assert res["locations"][0]["logicalLocations"][0]["fullyQualifiedName"] == (
+            f.address if f.source == "terraform" else f.physical_id)
+    assert dr.render_sarif(dr.Report([aws], "aws", "x")).count('"uri": "aws/us-east-1/aws_s3_bucket"') == 1
+
+
+def test_cli_sarif_from_extension_and_flag(tmp_path):
+    out = tmp_path / "report.sarif"
+    assert dr.main(["terraform", "--plan-json", str(FIXTURE), "-o", str(out)]) == 0
+    _check_sarif_shape(json.loads(out.read_text()))
+    plain = tmp_path / "r.out"
+    assert dr.main(["terraform", "--plan-json", str(FIXTURE), "-f", "sarif", "-o", str(plain)]) == 0
+    assert json.loads(plain.read_text())["version"] == "2.1.0"

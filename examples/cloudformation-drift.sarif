@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "cloud-drift-report",
+          "version": "0.8.0",
+          "semanticVersion": "0.8.0",
+          "informationUri": "https://github.com/orchesterra/cloud-drift-report",
+          "rules": [
+            {
+              "id": "drift/changed-outside-iac",
+              "name": "ChangedOutsideIaC",
+              "shortDescription": {
+                "text": "Resource changed outside IaC"
+              },
+              "fullDescription": {
+                "text": "The live resource no longer matches its Terraform state or CloudFormation template: someone changed it in the console, CLI or another tool. Put the change in code, or revert it."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/deleted-outside-iac",
+              "name": "DeletedOutsideIaC",
+              "shortDescription": {
+                "text": "Resource deleted outside IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is in Terraform state or a CloudFormation stack but no longer exists in the cloud."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/not-in-iac",
+              "name": "NotInIaC",
+              "shortDescription": {
+                "text": "Resource not in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource exists in the AWS account but no Terraform state file or CloudFormation stack checked lists it. Import it into Terraform, or delete it if nobody needs it."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/idle-not-in-iac",
+              "name": "IdleNotInIaC",
+              "shortDescription": {
+                "text": "Idle resource not in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is in no IaC and looks idle while it still bills."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/aws-created",
+              "name": "AwsCreatedResource",
+              "shortDescription": {
+                "text": "Resource AWS created itself"
+              },
+              "fullDescription": {
+                "text": "AWS created this resource (a default VPC, a service-linked role, ...). Reported because of --strict."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/idle-in-iac",
+              "name": "IdleInIaC",
+              "shortDescription": {
+                "text": "Idle resource in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is managed by IaC but looks idle while it still bills."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "automationDetails": {
+        "id": "cloud-drift-report/cloudformation/"
+      },
+      "results": [
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "HIGH: WebSG (payments-api (us-east-1)) (AWS::EC2::SecurityGroup) changed outside IaC: /SecurityGroupIngress/1: (none) \u2192 {\"CidrIp\": \"0.0.0.0/0\", \"FromPort\": 22, \"IpProtocol\": \"tcp\", \"ToPort\": 22}. Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0)."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "cloudformation/payments-api-us-east-1/AWS-EC2-SecurityGroup"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "WebSG",
+                  "kind": "resource",
+                  "fullyQualifiedName": "sg-0f1e2d3c4b5a69788"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "c841d9248cc14cc3a766cbda25de994a00c87cb9146349090a0999ae6f22a0a3"
+          },
+          "properties": {
+            "severity": "high",
+            "resourceType": "AWS::EC2::SecurityGroup",
+            "address": "WebSG",
+            "action": "changed outside IaC",
+            "physicalId": "sg-0f1e2d3c4b5a69788",
+            "location": "payments-api (us-east-1)"
+          }
+        },
+        {
+          "ruleId": "drift/deleted-outside-iac",
+          "ruleIndex": 1,
+          "level": "warning",
+          "message": {
+            "text": "MEDIUM: JobsQueue (batch-jobs (us-east-1)) (AWS::SQS::Queue) deleted outside IaC: resource no longer exists. Deleted outside IaC (console, CLI or another tool); the code still expects it."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "cloudformation/batch-jobs-us-east-1/AWS-SQS-Queue"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "JobsQueue",
+                  "kind": "resource",
+                  "fullyQualifiedName": "https://sqs.us-east-1.amazonaws.com/111122223333/batch-jobs"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "6b278868909f4285a821730a3476176b9cd32da7d130349fa308b5f069726120"
+          },
+          "properties": {
+            "severity": "medium",
+            "resourceType": "AWS::SQS::Queue",
+            "address": "JobsQueue",
+            "action": "deleted outside IaC",
+            "physicalId": "https://sqs.us-east-1.amazonaws.com/111122223333/batch-jobs",
+            "location": "batch-jobs (us-east-1)"
+          }
+        },
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "warning",
+          "message": {
+            "text": "MEDIUM: WebhookFunction (payments-api (us-east-1)) (AWS::Lambda::Function) changed outside IaC: /MemorySize: 128 \u2192 1024. Edited outside IaC, likely a console or CLI change to MemorySize."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "cloudformation/payments-api-us-east-1/AWS-Lambda-Function"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "WebhookFunction",
+                  "kind": "resource",
+                  "fullyQualifiedName": "payments-api-webhook"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "781584c399ce4a33fa52a2782af9ddb573abba0620f41c431862e14b3df75908"
+          },
+          "properties": {
+            "severity": "medium",
+            "resourceType": "AWS::Lambda::Function",
+            "address": "WebhookFunction",
+            "action": "changed outside IaC",
+            "physicalId": "payments-api-webhook",
+            "location": "payments-api (us-east-1)"
+          }
+        },
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "note",
+          "message": {
+            "text": "LOW: ReceiptsBucket (payments-api (us-east-1)) (AWS::S3::Bucket) changed outside IaC: /Tags/1/Value: dev \u2192 prod. Tags edited outside IaC."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "cloudformation/payments-api-us-east-1/AWS-S3-Bucket"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "ReceiptsBucket",
+                  "kind": "resource",
+                  "fullyQualifiedName": "acme-payments-receipts"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "c02f7c53c0fe55b7bffb19f21f9fa81908ef0b326f9d0ed5f5cc31e77660902d"
+          },
+          "properties": {
+            "severity": "low",
+            "resourceType": "AWS::S3::Bucket",
+            "address": "ReceiptsBucket",
+            "action": "changed outside IaC",
+            "physicalId": "acme-payments-receipts",
+            "location": "payments-api (us-east-1)"
+          }
+        }
+      ],
+      "properties": {
+        "target": "all stacks in us-east-1",
+        "generatedAt": "2026-11-20 09:00 UTC",
+        "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+      }
+    }
+  ]
+}

@@ -38,3 +38,4 @@ jobs:
           test "${{ steps.drift.outputs.findings }}" = "6"
           test "${{ steps.drift.outputs.high }}" = "3"
           test -s "${{ steps.drift.outputs.report-dir }}/report.html"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['version'] == '2.1.0' and len(d['runs'][0]['results']) == 6" "${{ steps.drift.outputs.sarif-file }}"

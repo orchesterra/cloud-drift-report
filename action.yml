@@ -20,7 +20,7 @@ inputs:
     required: false
     default: "true"
   upload-report:
-    description: "Upload the HTML, Markdown and JSON reports as a workflow artifact"
+    description: "Upload the HTML, Markdown, JSON and SARIF reports as a workflow artifact"
     required: false
     default: "true"
   report-name:
@@ -36,8 +36,11 @@ outputs:
     description: "Number of high-severity findings"
     value: ${{ steps.report.outputs.high }}
   report-dir:
-    description: "Folder with report.html, report.md and report.json"
+    description: "Folder with report.html, report.md, report.json and report.sarif"
     value: ${{ steps.report.outputs.dir }}
+  sarif-file:
+    description: "The SARIF report, for github/codeql-action/upload-sarif (GitHub code scanning)"
+    value: ${{ steps.report.outputs.sarif }}
 
 runs:
   using: composite
@@ -62,7 +65,8 @@ runs:
         set +e
         # ARGS is split on spaces on purpose so several flags can be passed in one input.
         # shellcheck disable=SC2086
-        cloud-drift-report "$MODE" $ARGS -o "$OUT/report.md" -o "$OUT/report.html" -o "$OUT/report.json"
+        cloud-drift-report "$MODE" $ARGS -o "$OUT/report.md" -o "$OUT/report.html" -o "$OUT/report.json" \
+          -o "$OUT/report.sarif"
         code=$?
         set -e
         if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
@@ -76,6 +80,7 @@ runs:
         print(f"high={s['high']}")
         PY
         echo "dir=$OUT" >> "$GITHUB_OUTPUT"
+        echo "sarif=$OUT/report.sarif" >> "$GITHUB_OUTPUT"
         cat "$OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload reports

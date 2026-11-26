@@ -1366,6 +1366,7 @@ class IacEntry:
     address: str = ""     # Terraform address (module.x.aws_s3_bucket.logs["a"]), or the stack's logical id
     ident: str = ""       # the state's `id` attribute
     account: str = ""     # AWS account the state recorded, when its ARN or owner says
+    module: str = ""      # Terraform module path (module.x.module.y), "" for the root module
 
 
 def _state_tokens(attrs: dict[str, Any]) -> tuple[frozenset[str], str]:
@@ -1414,7 +1415,7 @@ def parse_state(doc: dict[str, Any], where: str) -> list[IacEntry]:
                 key = inst.get("index_key")
                 address = base + (f"[{json.dumps(key)}]" if key is not None else "")
                 out.append(IacEntry(tf_type, "", tokens, region, where, address, str(attrs.get("id") or ""),
-                                    _state_account(attrs)))
+                                    _state_account(attrs), res.get("module", "")))
     return out
 
 
@@ -1724,6 +1725,7 @@ def stack_entries(session: Any, region: str, log: Callable[..., None] = print,
 class Match:
     unmanaged: list[LiveResource]
     managed: list[tuple[LiveResource, str]]
+    entries: dict[int, IacEntry] = field(default_factory=dict)  # id(resource) -> the state entry it matched
 
 
 def match(inventory: Inventory, iac: list[IacEntry], account: str = "") -> Match:
@@ -1735,16 +1737,17 @@ def match(inventory: Inventory, iac: list[IacEntry], account: str = "") -> Match
             by_tf.setdefault(e.tf_type, []).append(e)
         if e.cc_type:
             by_cc.setdefault(e.cc_type, []).append(e)
-    unmanaged, managed = [], []
+    unmanaged, managed, entries = [], [], {}
     for res in inventory.resources:
         tf = TERRAFORM_TYPE_ALIASES.get(res.tf_type, res.tf_type)
         candidates = by_tf.get(tf, []) + by_cc.get(res.cc_type, [])
         hit = _find(res, candidates, account)
         if hit:
             managed.append((res, hit.where))
+            entries[id(res)] = hit
         else:
             unmanaged.append(res)
-    return Match(unmanaged, managed)
+    return Match(unmanaged, managed, entries)
 
 
 def _other_account(entry: IacEntry, res: LiveResource, account: str) -> str:
