@@ -5,6 +5,8 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-26
+
 ### Added
 - SARIF 2.1.0 output for GitHub code scanning: `-f sarif`, or any `-o` file ending in `.sarif`. One rule per
   kind of finding (changed or deleted outside IaC, not in IaC, idle and not in IaC, created by AWS, idle in
