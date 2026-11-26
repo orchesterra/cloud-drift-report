@@ -1,6 +1,6 @@
 {
   "tool": "cloud-drift-report",
-  "version": "0.3.0",
+  "version": "0.8.0",
   "source": "terraform",
   "target": "./infra/prod",
   "schema": 1,
@@ -27,7 +27,9 @@
       ],
       "physical_id": "main",
       "severity": "high",
-      "explanation": "Password or secret changed outside IaC (a console reset or manual rotation)."
+      "explanation": "Password or secret changed outside IaC (a console reset or manual rotation).",
+      "state_source": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+      "module": ""
     },
     {
       "source": "terraform",
@@ -44,7 +46,9 @@
       ],
       "physical_id": "app:app",
       "severity": "high",
-      "explanation": "Policy or permissions edited outside IaC; review who gained or lost access."
+      "explanation": "Policy or permissions edited outside IaC; review who gained or lost access.",
+      "state_source": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+      "module": ""
     },
     {
       "source": "terraform",
@@ -69,7 +73,9 @@
       ],
       "physical_id": "arn:aws:ec2:us-east-1:111122223333:security-group/sg-0a1b2c3d4e5f60718",
       "severity": "high",
-      "explanation": "Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0)."
+      "explanation": "Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0).",
+      "state_source": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+      "module": ""
     },
     {
       "source": "terraform",
@@ -86,7 +92,9 @@
       ],
       "physical_id": "i-0123456789abcdef0",
       "severity": "medium",
-      "explanation": "Edited outside IaC, likely a console or CLI change to instance_type."
+      "explanation": "Edited outside IaC, likely a console or CLI change to instance_type.",
+      "state_source": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+      "module": ""
     },
     {
       "source": "terraform",
@@ -97,7 +105,9 @@
       "changes": [],
       "physical_id": "arn:aws:sqs:us-east-1:111122223333:jobs",
       "severity": "medium",
-      "explanation": "Deleted outside IaC (console, CLI or another tool); the code still expects it."
+      "explanation": "Deleted outside IaC (console, CLI or another tool); the code still expects it.",
+      "state_source": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+      "module": ""
     },
     {
       "source": "terraform",
@@ -114,7 +124,9 @@
       ],
       "physical_id": "acme-logs",
       "severity": "low",
-      "explanation": "Tag added outside IaC, often by a person, a cost tool or an AWS service."
+      "explanation": "Tag added outside IaC, often by a person, a cost tool or an AWS service.",
+      "state_source": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+      "module": ""
     }
   ],
   "note": "6 of these can be fixed with a pull request in OrchesTerra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",

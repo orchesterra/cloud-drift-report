@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "cloud-drift-report",
+          "version": "0.8.0",
+          "semanticVersion": "0.8.0",
+          "informationUri": "https://github.com/orchesterra/cloud-drift-report",
+          "rules": [
+            {
+              "id": "drift/changed-outside-iac",
+              "name": "ChangedOutsideIaC",
+              "shortDescription": {
+                "text": "Resource changed outside IaC"
+              },
+              "fullDescription": {
+                "text": "The live resource no longer matches its Terraform state or CloudFormation template: someone changed it in the console, CLI or another tool. Put the change in code, or revert it."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/deleted-outside-iac",
+              "name": "DeletedOutsideIaC",
+              "shortDescription": {
+                "text": "Resource deleted outside IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is in Terraform state or a CloudFormation stack but no longer exists in the cloud."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/not-in-iac",
+              "name": "NotInIaC",
+              "shortDescription": {
+                "text": "Resource not in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource exists in the AWS account but no Terraform state file or CloudFormation stack checked lists it. Import it into Terraform, or delete it if nobody needs it."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/idle-not-in-iac",
+              "name": "IdleNotInIaC",
+              "shortDescription": {
+                "text": "Idle resource not in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is in no IaC and looks idle while it still bills."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/aws-created",
+              "name": "AwsCreatedResource",
+              "shortDescription": {
+                "text": "Resource AWS created itself"
+              },
+              "fullDescription": {
+                "text": "AWS created this resource (a default VPC, a service-linked role, ...). Reported because of --strict."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/idle-in-iac",
+              "name": "IdleInIaC",
+              "shortDescription": {
+                "text": "Idle resource in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is managed by IaC but looks idle while it still bills."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "automationDetails": {
+        "id": "cloud-drift-report/terraform/"
+      },
+      "results": [
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "HIGH: aws_db_instance.main (aws_db_instance) changed outside IaC: password: (sensitive) \u2192 (sensitive, changed). In state: s3://acme-tf-state/env:/prod/infra/terraform.tfstate. Password or secret changed outside IaC (a console reset or manual rotation)."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/prod"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "aws_db_instance.main",
+                  "kind": "resource",
+                  "fullyQualifiedName": "aws_db_instance.main"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "528f638187afe20a40459c4a59e6cd9c68d99a896b8d29f3feb3e73ee1b6be7e"
+          },
+          "properties": {
+            "severity": "high",
+            "resourceType": "aws_db_instance",
+            "address": "aws_db_instance.main",
+            "action": "changed outside IaC",
+            "physicalId": "main",
+            "stateSource": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+            "location": "./infra/prod"
+          }
+        },
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "HIGH: aws_iam_role_policy.app (aws_iam_role_policy) changed outside IaC: policy: {\"Statement\":[{\"Action\":\"s3:GetObject\",\"Effect\":\"Allow\",\"Resource\":\"*\"}]} \u2192 {\"Statement\":[{\"Action\":\"s3:*\",\"Effect\":\"Allow\",\"Resource\":\"*\"}]}. In state: s3://acme-tf-state/env:/prod/infra/terraform.tfstate. Policy or permissions edited outside IaC; review who gained or lost access."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/prod"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "aws_iam_role_policy.app",
+                  "kind": "resource",
+                  "fullyQualifiedName": "aws_iam_role_policy.app"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "1f039225b0d4871120d4e278affe401538a5e0bc6c112427df0396bd22c06d20"
+          },
+          "properties": {
+            "severity": "high",
+            "resourceType": "aws_iam_role_policy",
+            "address": "aws_iam_role_policy.app",
+            "action": "changed outside IaC",
+            "physicalId": "app:app",
+            "stateSource": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+            "location": "./infra/prod"
+          }
+        },
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "HIGH: aws_security_group.web (aws_security_group) changed outside IaC: ingress[1]: (none) \u2192 {\"cidr_blocks\": [\"0.0.0.0/0\"], \"description\": \"temp ssh\", \"from_port\": 22, \"protocol\": \"tcp\", \"to_port\": 22}. In state: s3://acme-tf-state/env:/prod/infra/terraform.tfstate. Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0)."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/prod"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "aws_security_group.web",
+                  "kind": "resource",
+                  "fullyQualifiedName": "aws_security_group.web"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "b2dbd7ce1c0782ad00a8ce6f5cdbb462e4dff2980f316a2ca1fa7c8eaf07562a"
+          },
+          "properties": {
+            "severity": "high",
+            "resourceType": "aws_security_group",
+            "address": "aws_security_group.web",
+            "action": "changed outside IaC",
+            "physicalId": "arn:aws:ec2:us-east-1:111122223333:security-group/sg-0a1b2c3d4e5f60718",
+            "stateSource": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+            "location": "./infra/prod"
+          }
+        },
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "warning",
+          "message": {
+            "text": "MEDIUM: aws_instance.worker (aws_instance) changed outside IaC: instance_type: t3.small \u2192 t3.large. In state: s3://acme-tf-state/env:/prod/infra/terraform.tfstate. Edited outside IaC, likely a console or CLI change to instance_type."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/prod"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "aws_instance.worker",
+                  "kind": "resource",
+                  "fullyQualifiedName": "aws_instance.worker"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "c0407bc78587240879e4e68a879ebef7bd12d49ad062df854884a717affe54cb"
+          },
+          "properties": {
+            "severity": "medium",
+            "resourceType": "aws_instance",
+            "address": "aws_instance.worker",
+            "action": "changed outside IaC",
+            "physicalId": "i-0123456789abcdef0",
+            "stateSource": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+            "location": "./infra/prod"
+          }
+        },
+        {
+          "ruleId": "drift/deleted-outside-iac",
+          "ruleIndex": 1,
+          "level": "warning",
+          "message": {
+            "text": "MEDIUM: aws_sqs_queue.jobs (aws_sqs_queue) deleted outside IaC: resource no longer exists. In state: s3://acme-tf-state/env:/prod/infra/terraform.tfstate. Deleted outside IaC (console, CLI or another tool); the code still expects it."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/prod"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "aws_sqs_queue.jobs",
+                  "kind": "resource",
+                  "fullyQualifiedName": "aws_sqs_queue.jobs"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "8f25f569871ffa7d57fd4495a72a9a7579c6ca3589db46434a2e554c4b0f3ea5"
+          },
+          "properties": {
+            "severity": "medium",
+            "resourceType": "aws_sqs_queue",
+            "address": "aws_sqs_queue.jobs",
+            "action": "deleted outside IaC",
+            "physicalId": "arn:aws:sqs:us-east-1:111122223333:jobs",
+            "stateSource": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+            "location": "./infra/prod"
+          }
+        },
+        {
+          "ruleId": "drift/changed-outside-iac",
+          "ruleIndex": 0,
+          "level": "note",
+          "message": {
+            "text": "LOW: aws_s3_bucket.logs (aws_s3_bucket) changed outside IaC: tags.CostCenter: (none) \u2192 1234. In state: s3://acme-tf-state/env:/prod/infra/terraform.tfstate. Tag added outside IaC, often by a person, a cost tool or an AWS service."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/prod"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "aws_s3_bucket.logs",
+                  "kind": "resource",
+                  "fullyQualifiedName": "aws_s3_bucket.logs"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "cfed1828ff69fa31a9e6e3a1f09a19005e63915cd8719e0c3588be94d6268239"
+          },
+          "properties": {
+            "severity": "low",
+            "resourceType": "aws_s3_bucket",
+            "address": "aws_s3_bucket.logs",
+            "action": "changed outside IaC",
+            "physicalId": "acme-logs",
+            "stateSource": "s3://acme-tf-state/env:/prod/infra/terraform.tfstate",
+            "location": "./infra/prod"
+          }
+        }
+      ],
+      "properties": {
+        "target": "./infra/prod",
+        "generatedAt": "2026-11-20 09:00 UTC",
+        "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+      }
+    }
+  ]
+}

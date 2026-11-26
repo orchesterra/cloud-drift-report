@@ -76,7 +76,11 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
   Costs are that region's list prices; if the finding says "us-east-1 list price used", the Price List API could
   not be read (it needs `pricing:GetProducts`), so the real cost may differ.
 5. Show the Markdown summary in chat: the counts by severity first, then the high rows.
-   For a file to share, rerun with `--format html -o drift-report.html` (or `csv`, `json`).
+   For a file to share, rerun with `--format html -o drift-report.html` (or `csv`, `json`). For GitHub code
+   scanning, `-o drift.sarif` (or `-f sarif`) writes SARIF 2.1.0 to upload with
+   `github/codeql-action/upload-sarif`.
+   Terraform rows name their state and module ("in state: s3://.../terraform.tfstate, module.network"); with
+   many states or modules, use that to tell the user where to look.
 6. Explain the high-severity rows in plain words (who might now have access, what is exposed) and suggest the
    fix for each: revert the change in AWS, or update the code to match. Do not apply fixes yourself unless the
    user asks, and then only through their normal review process. For not-in-IaC rows the fix is to write

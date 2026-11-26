@@ -5,6 +5,24 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- SARIF 2.1.0 output for GitHub code scanning: `-f sarif`, or any `-o` file ending in `.sarif`. One rule per
+  kind of finding (changed or deleted outside IaC, not in IaC, idle and not in IaC, created by AWS, idle in
+  IaC), level from severity (high = error, medium = warning, low = note), and the Markdown report's text as the
+  message. Terraform findings point at the `.tf` file and line declaring the resource when it is found under
+  `--dir` (modules through `.terraform/modules/modules.json`), else the local state file or the directory;
+  other findings get a stable path and a logical location with the address or ARN. `partialFingerprints` keep
+  an alert the same alert across runs. The GitHub Action also writes `report.sarif` and has a `sarif-file`
+  output for `github/codeql-action/upload-sarif`.
+- Where a Terraform finding lives: each one records the state it came from (S3 key with workspace, local path,
+  or HCP Terraform `host/organization/workspace`) and its module path, shown in Markdown and HTML ("in state:
+  s3://.../env:/prod/terraform.tfstate, module.network"), as `state_source` and `module` in JSON and as CSV
+  columns. Idle resources that are in IaC name the state file, address and module (or stack) that manage them.
+  Rows for resources not in IaC are unchanged.
+
+### Changed
+- The sample reports in `examples/` are regenerated with this version and include SARIF.
+
 ## [0.8.0] - 2026-11-24
 
 ### Added

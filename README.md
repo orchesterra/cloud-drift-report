@@ -69,7 +69,8 @@ Costs use that region's on-demand rates from the AWS Price List API
 (`pricing:GetProducts`); if it can't be read, the us-east-1 list price is used and the finding says so. One
 that is also not in IaC is reported at high severity with the cost in its explanation; ones your Terraform
 does manage are named in the coverage line ("Idle and still billing: ...") and in the JSON's `idle` list,
-since being in code doesn't make them free.
+since being in code doesn't make them free. Each of those says which state file and module manages it
+(`state_source`, `address`, `module`), or which stack.
 
 When a resource you expect to be in IaC is reported anyway, `--explain TEXT` says, for each listed resource
 whose ID, name or ARN contains TEXT, what it matched or why it didn't: no state entry of that type, an entry
@@ -82,8 +83,15 @@ recorded for another region, or the values it looked for.
 - **Medium**: any other change that alters behaviour, deleted resources, and most resources not in IaC.
 - **Low**: tags only, and log groups an AWS service created for one of your resources.
 
-Formats: Markdown (default), CSV, JSON and a self-contained HTML page (no external assets, light and dark mode,
-severity filter).
+**Where a finding lives.** Every Terraform finding says which state it came from and which module declares
+it, for example "in state: s3://acme-tf-state/env:/prod/terraform.tfstate, module.network". The state is the
+backend of the `--dir` checked, in its current workspace: an S3 key, a local path, or an HCP Terraform
+`host/organization/workspace` (a `--plan-json` run knows only the module). The JSON has the same as
+`state_source` and `module` (`""` for the root module), and the CSV has both columns. Rows for resources not in
+IaC have neither, since no state has them.
+
+Formats: Markdown (default), CSV, JSON, a self-contained HTML page (no external assets, light and dark mode,
+severity filter) and SARIF 2.1.0 for GitHub code scanning (see [GitHub code scanning](#github-code-scanning-sarif)).
 
 ## Install
 
@@ -178,7 +186,7 @@ mode leaves roles to your provider configuration.
 
 ### In GitHub Actions
 
-Use the action. It posts the report on the run's summary page, keeps the HTML, Markdown and JSON reports as
+Use the action. It posts the report on the run's summary page, keeps the HTML, Markdown, JSON and SARIF reports as
 an artifact, and fails the job when something drifted or is not in IaC. With GitHub's OIDC and a read-only
 role, no keys are stored:
 
@@ -220,8 +228,47 @@ Terraform/OpenTofu drift: add `hashicorp/setup-terraform` or `opentofu/setup-ope
 | `upload-report` | `true` | keep the reports as a workflow artifact |
 | `report-name` | `cloud-drift-report` | the artifact's name |
 
-Outputs: `findings` (count), `high` (high-severity count) and `report-dir` (folder with `report.html`,
-`report.md` and `report.json`), for example to post to Slack only when `high` is not `0`.
+Outputs: `findings` (count), `high` (high-severity count), `report-dir` (folder with `report.html`,
+`report.md`, `report.json` and `report.sarif`) and `sarif-file`, for example to post to Slack only when `high`
+is not `0`.
+
+### GitHub code scanning (SARIF)
+
+`-f sarif` (or any `-o` file ending in `.sarif`) writes [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html),
+so findings show up as code scanning alerts on the repository and on pull requests. Upload the action's
+`sarif-file` with `github/codeql-action/upload-sarif`:
+
+```yaml
+    permissions:
+      id-token: write         # for configure-aws-credentials
+      contents: read
+      security-events: write  # for upload-sarif
+    steps:
+      # ... checkout, credentials, terraform init ...
+      - uses: orchesterra/cloud-drift-report@v0
+        id: drift
+        with:
+          mode: terraform
+          args: --dir ./infra
+          fail-on-drift: "false"  # let code scanning decide what blocks a PR
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: ${{ steps.drift.outputs.sarif-file }}
+          category: drift-infra   # one category per directory, account or mode you check
+```
+
+Without the action: `cloud-drift-report terraform --dir ./infra -o drift.sarif`, then upload `drift.sarif`.
+Each kind of finding is its own rule (`drift/changed-outside-iac`, `drift/deleted-outside-iac`,
+`drift/not-in-iac`, `drift/idle-not-in-iac`, `drift/aws-created`, `drift/idle-in-iac`); the alert level follows
+severity (high = error, medium = warning, low = note) and the message is the Markdown report's text. A
+Terraform finding points at the `.tf` file and line with its `resource "type" "name"` block when one is found
+under `--dir` (resources in modules are looked up through `.terraform/modules/modules.json`, written by
+`init`), else at the local state file or the directory checked. Resources with no file in the repository
+(CloudFormation, not in IaC) get a stable path such as `aws/us-east-1/aws_s3_bucket` plus a logical location
+with the address or ARN. Every result has a `partialFingerprints` hash of its rule, type, address and
+state (or ID and region), so an alert stays the same alert from run to run and closes when the drift is fixed.
+Run the tool from the repository root so file paths match the checkout.
 
 Without the action: `pip install cloud-drift-report`, then run the CLI with `-o report.html -o report.md`
 (each file takes the format of its extension) and `--fail-on-drift`. The action reads a `.driftignore` in the

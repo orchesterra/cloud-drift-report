@@ -15,17 +15,20 @@ import drift_report as dr  # noqa: E402
 from test_drift_report import DELETED_DRIFT, LAMBDA_DRIFT, SG_DRIFT, TAG_DRIFT, FakeCfn  # noqa: E402
 
 STAMP = "2026-11-20 09:00 UTC"
-EXT = {"md": "md", "csv": "csv", "json": "json", "html": "html", "driftignore": "driftignore"}
+EXT = {"md": "md", "csv": "csv", "json": "json", "html": "html", "driftignore": "driftignore", "sarif": "sarif"}
 
 
 def write(report, stem):
     for fmt, render in dr.RENDERERS.items():
+        if fmt not in EXT:  # import blocks: Terraform code, not a sample report
+            continue
         (ROOT / "examples" / f"{stem}.{EXT[fmt]}").write_text(render(report), encoding="utf-8")
 
 
 tf_findings = dr.load_plan_file(str(ROOT / "tests" / "fixtures" / "refresh_plan.json"))
 for f in tf_findings:
     f.location = "./infra/prod"  # not the fixture's path on whoever's machine generates the samples
+    f.state_source = "s3://acme-tf-state/env:/prod/infra/terraform.tfstate"
 tf = dr.Report(tf_findings, "terraform", "./infra/prod", generated_at=STAMP)
 write(tf, "terraform-drift")
 

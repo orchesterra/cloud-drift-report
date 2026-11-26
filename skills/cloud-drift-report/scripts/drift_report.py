@@ -121,6 +121,54 @@ class Finding:
     explanation: str = ""
     tags: dict[str, str] = field(default_factory=dict, repr=False)  # for tag: ignore rules; not in reports
     import_id: str = ""    # not-in-IaC scan: the ID an import {} block takes ("" when not known)
+    state_source: str = ""  # Terraform: the state this resource is in (s3://..., a local path, host/org/workspace)
+    module: str = ""        # Terraform: module path (module.x.module.y), "" for the root module
+    kind: str = field(default="", repr=False)  # not-in-IaC scan: "idle" or "aws-created"; not in reports
+
+
+def split_address(address: str) -> list[str]:
+    """Split a Terraform address on dots that are not inside [...] index keys (which may be quoted)."""
+    parts, cur, depth, quoted = [], "", 0, False
+    i = 0
+    while i < len(address):
+        ch = address[i]
+        if quoted:
+            cur += ch
+            if ch == "\\" and i + 1 < len(address):
+                cur += address[i + 1]
+                i += 1
+            elif ch == '"':
+                quoted = False
+        elif ch == '"':
+            quoted, cur = True, cur + ch
+        elif ch == "[":
+            depth, cur = depth + 1, cur + ch
+        elif ch == "]":
+            depth, cur = depth - 1, cur + ch
+        elif ch == "." and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+        i += 1
+    if cur:
+        parts.append(cur)
+    return parts
+
+
+def module_of(address: str) -> str:
+    """module.network.module.subnets from module.network.module.subnets.aws_subnet.a[0] ("" in the root module)."""
+    parts, out = split_address(address), []
+    while len(parts) >= 3 and parts[0] == "module":
+        out += parts[:2]
+        parts = parts[2:]
+    return ".".join(out)
+
+
+def trace_text(f: Finding) -> str:
+    """Where a Terraform resource lives: "in state: s3://b/env:/prod/terraform.tfstate, module.network"."""
+    bits = ([f"in state: {f.state_source}"] if f.state_source else []) + ([f.module] if f.module else [])
+    return ", ".join(bits)
 
 
 def finalize(f: Finding) -> Finding:
@@ -279,11 +327,13 @@ def parse_plan_json(plan: dict, location: str = "") -> list[Finding]:
         if action == CHANGED and not changes:
             continue
         before = ch.get("before") or {}
+        address = rc.get("address", "")
         findings.append(finalize(Finding(
-            source="terraform", location=location, address=rc.get("address", ""),
+            source="terraform", location=location, address=address,
             type=rc.get("type", ""), action=action, changes=changes,
             physical_id=str(before.get("arn") or before.get("id") or ""),
             tags=_str_tags(before.get("tags_all") or before.get("tags")),
+            module=rc.get("module_address") or module_of(address),
         )))
     return findings
 
@@ -307,6 +357,7 @@ def parse_json_log(lines: Iterable[str], location: str = "") -> list[Finding]:
         findings.append(finalize(Finding(
             source="terraform", location=location, address=res.get("addr", ""),
             type=res.get("resource_type", ""), action=action,
+            module=res.get("module") or module_of(res.get("addr", "")),
         )))
     return findings
 
@@ -351,6 +402,57 @@ def run_terraform(directory: str, binary: str | None = None, extra_args: list[st
         if show.returncode != 0:
             raise RuntimeError(f"`{tf} show -json` failed:\n{show.stderr or show.stdout}")
     return parse_plan_json(json.loads(show.stdout), location=directory)
+
+
+def _current_workspace(directory: str) -> str:
+    if os.environ.get("TF_WORKSPACE"):
+        return os.environ["TF_WORKSPACE"]
+    try:
+        with open(os.path.join(directory, ".terraform", "environment"), encoding="utf-8") as fh:
+            return fh.read().strip() or "default"
+    except OSError:
+        return "default"
+
+
+def _shown_path(path: str) -> str:
+    """A path relative to the current directory when it is under it, so reports never show a home directory."""
+    rel = os.path.relpath(path)
+    return path if rel.startswith("..") else rel
+
+
+def state_source_of(directory: str) -> str:
+    """The state a Terraform directory's current workspace uses, from its backend (no state is read)."""
+    import aws_inventory as inv_mod
+
+    try:
+        backend = inv_mod.terraform_backend(directory)
+    except (OSError, ValueError):
+        return ""
+    if not backend:
+        return ""
+    kind, ws = backend.get("type", ""), _current_workspace(directory)
+    if kind == "s3" and backend.get("bucket") and backend.get("key"):
+        prefix = (backend.get("workspace_key_prefix") or "env:").strip("/")
+        key = backend["key"] if ws == "default" else f"{prefix}/{ws}/{backend['key']}"
+        return f"s3://{backend['bucket']}/{key}"
+    if kind == "local":
+        path = backend.get("path") or "terraform.tfstate"
+        if ws != "default":
+            path = os.path.join(backend.get("workspace_dir") or "terraform.tfstate.d", ws, os.path.basename(path))
+        return _shown_path(os.path.normpath(os.path.join(directory, path)))
+    if kind in ("cloud", "remote"):
+        host = backend.get("hostname") or "app.terraform.io"
+        org = backend.get("organization") or os.environ.get("TF_CLOUD_ORGANIZATION") or ""
+        spaces = backend.get("workspaces") or {}
+        name = spaces.get("name") or (f"{spaces['prefix']}{ws}" if spaces.get("prefix") else ws)
+        return f"{host}/{org}/{name}"
+    if kind == "gcs" and backend.get("bucket"):
+        prefix = (backend.get("prefix") or "").strip("/")
+        return f"gs://{backend['bucket']}/{prefix + '/' if prefix else ''}{ws}.tfstate"
+    if kind == "azurerm" and backend.get("container_name") and backend.get("key"):
+        key = backend["key"] + ("" if ws == "default" else f"env:{ws}")
+        return f"azurerm://{backend.get('storage_account_name', '')}/{backend['container_name']}/{key}"
+    return f"{kind} backend" + ("" if ws == "default" else f" (workspace {ws})")
 
 
 # --- CloudFormation -------------------------------------------------------
@@ -490,6 +592,7 @@ class Report:
     ignore_files: list[str] = field(default_factory=list)
     ignore_text: str = ""  # the rules as written, kept when a new .driftignore is generated
     incomplete: list[str] = field(default_factory=list)  # what the scan couldn't read
+    code_dir: str = ""  # Terraform directory, to point SARIF results at the code declaring a resource
 
     def incomplete_line(self) -> str:
         if not self.incomplete:
@@ -547,6 +650,13 @@ def _md_cell(s: str) -> str:
     return s.replace("|", "\\|").replace("\n", " ")
 
 
+def _idle_where(i: dict[str, Any]) -> str:
+    if not i.get("in_iac"):
+        return ""
+    bits = ([f"in state: {i['state_source']}"] if i.get("state_source") else []) + ([i["module"]] if i.get("module") else [])
+    return f" (in IaC{': ' + ', '.join(bits) if bits else ''})"
+
+
 def coverage_line(cov: dict[str, Any]) -> str:
     pct = cov.get("percent_in_iac")
     parts = ([f"{pct:g}% in IaC"] if pct is not None else []) + [
@@ -564,7 +674,7 @@ def coverage_line(cov: dict[str, Any]) -> str:
     idle = cov.get("idle") or []
     if idle:
         line += (" Idle and still billing: " + "; ".join(
-            f"{i['type']} {i['id']}{' (in IaC)' if i['in_iac'] else ''}" for i in idle[:5])
+            f"{i['type']} {i['id']}{_idle_where(i)}" for i in idle[:5])
                  + (", ..." if len(idle) > 5 else "") + "; see the JSON output.")
     return line
 
@@ -598,6 +708,8 @@ def render_markdown(r: Report) -> str:
                 "|---|---|---|---|---|---|"]
         for f in r.sorted():
             res = f.address + (f" ({f.location})" if r.source in ("cloudformation", "aws") else "")
+            if trace_text(f):
+                res += f"<br>{trace_text(f)}"
             out.append("| " + " | ".join(_md_cell(x) for x in (
                 f.severity.upper(), res, f.type, f.action, _changes_text(f, "<br>"), f.explanation)) + " |")
         out += ["", r.pr_line()]
@@ -606,7 +718,7 @@ def render_markdown(r: Report) -> str:
 
 
 CSV_FIELDS = ["severity", "source", "location", "address", "type", "action", "physical_id",
-              "attribute", "before", "after", "what_probably_happened"]
+              "attribute", "before", "after", "what_probably_happened", "state_source", "module"]
 
 
 def render_csv(r: Report) -> str:
@@ -618,7 +730,8 @@ def render_csv(r: Report) -> str:
         for ch in rows:
             w.writerow([f.severity, f.source, f.location, f.address, f.type, f.action, f.physical_id,
                         ch.path, "" if ch.before is None else _fmt_value(ch.before, 10_000),
-                        "" if ch.after is None else _fmt_value(ch.after, 10_000), f.explanation])
+                        "" if ch.after is None else _fmt_value(ch.after, 10_000), f.explanation,
+                        f.state_source, f.module])
     w.writerow([])
     if r.ignored:
         w.writerow([f"# {r.ignored_line()}"])
@@ -629,8 +742,12 @@ def render_csv(r: Report) -> str:
 def _finding_json(f: Finding) -> dict[str, Any]:
     d = asdict(f)
     d.pop("tags", None)
+    d.pop("kind", None)
     if not d["import_id"]:
         d.pop("import_id")
+    if f.source != "terraform":  # state and module only mean something for Terraform resources
+        d.pop("state_source")
+        d.pop("module")
     return d
 
 
@@ -706,6 +823,8 @@ def render_html(r: Report) -> str:
                 f"<li><code>{e(x.path)}</code><br><code>{e(_fmt_value(x.before, 300))}</code> "
                 f"<span class=arrow>→</span> <code>{e(_fmt_value(x.after, 300))}</code></li>" for x in f.changes) + "</ul>"
         where = f"<div class=type>{e(f.location)}</div>" if r.source in ("cloudformation", "aws") else ""
+        if trace_text(f):
+            where += f"<div class=type>{e(trace_text(f))}</div>"
         rows.append(
             f"<tr data-sev={f.severity}><td><span class='sev {f.severity}'>{f.severity.upper()}</span></td>"
             f"<td><code>{e(f.address)}</code>{where}<div class=type>{e(f.type)}</div></td>"
@@ -809,8 +928,198 @@ def render_imports(r: Report) -> str:
     return "\n".join(out) + "\n"
 
 
+# --- SARIF ------------------------------------------------------------------
+
+REPO_URL = "https://github.com/orchesterra/cloud-drift-report"
+SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
+SARIF_LEVELS = {"high": "error", "medium": "warning", "low": "note"}
+
+# One rule per kind of finding: (id, name, short description, full description, default level).
+SARIF_RULES = [
+    ("drift/changed-outside-iac", "ChangedOutsideIaC", "Resource changed outside IaC",
+     "The live resource no longer matches its Terraform state or CloudFormation template: someone changed it "
+     "in the console, CLI or another tool. Put the change in code, or revert it.", "warning"),
+    ("drift/deleted-outside-iac", "DeletedOutsideIaC", "Resource deleted outside IaC",
+     "The resource is in Terraform state or a CloudFormation stack but no longer exists in the cloud.", "warning"),
+    ("drift/not-in-iac", "NotInIaC", "Resource not in IaC",
+     "The resource exists in the AWS account but no Terraform state file or CloudFormation stack checked "
+     "lists it. Import it into Terraform, or delete it if nobody needs it.", "warning"),
+    ("drift/idle-not-in-iac", "IdleNotInIaC", "Idle resource not in IaC",
+     "The resource is in no IaC and looks idle while it still bills.", "error"),
+    ("drift/aws-created", "AwsCreatedResource", "Resource AWS created itself",
+     "AWS created this resource (a default VPC, a service-linked role, ...). Reported because of --strict.", "note"),
+    ("drift/idle-in-iac", "IdleInIaC", "Idle resource in IaC",
+     "The resource is managed by IaC but looks idle while it still bills.", "warning"),
+]
+
+
+def sarif_rule_id(f: Finding) -> str:
+    if f.action == CHANGED:
+        return "drift/changed-outside-iac"
+    if f.action == DELETED:
+        return "drift/deleted-outside-iac"
+    return {"idle": "drift/idle-not-in-iac", "aws-created": "drift/aws-created"}.get(f.kind, "drift/not-in-iac")
+
+
+def _uri(path: str) -> str:
+    """A path relative to the current directory (the repository root in CI) with forward slashes, else a file URI."""
+    rel = os.path.relpath(os.path.abspath(path))
+    if rel.startswith(".."):
+        from pathlib import Path
+        return Path(os.path.abspath(path)).as_uri()
+    return rel.replace(os.sep, "/")
+
+
+def _module_dirs(code_dir: str) -> dict[str, str]:
+    """Module key (network.subnets) -> directory, from `terraform init`'s .terraform/modules/modules.json."""
+    try:
+        with open(os.path.join(code_dir, ".terraform", "modules", "modules.json"), encoding="utf-8") as fh:
+            mods = (json.load(fh) or {}).get("Modules") or []
+    except (OSError, ValueError):
+        return {}
+    return {m.get("Key", ""): os.path.join(code_dir, m["Dir"]) for m in mods if m.get("Dir")}
+
+
+def _declarations(directory: str, rtype: str, name: str, recursive: bool = False) -> list[tuple[str, int]]:
+    pattern = re.compile(r'^[ \t]*resource\s+"' + re.escape(rtype) + r'"\s+"' + re.escape(name) + r'"', re.M)
+    if recursive:
+        files = []
+        for root, dirs, names in os.walk(directory):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]  # not .terraform or .git
+            files += [os.path.join(root, n) for n in names if n.endswith(".tf")]
+    else:
+        files = [os.path.join(directory, n) for n in sorted(os.listdir(directory)) if n.endswith(".tf")] \
+            if os.path.isdir(directory) else []
+    found = []
+    for path in sorted(files):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for m in pattern.finditer(text):
+            found.append((path, text.count("\n", 0, m.start()) + 1))
+    return found
+
+
+def find_declaration(code_dir: str, address: str, modules: dict[str, str] | None = None) -> tuple[str, int] | None:
+    """(file, line) of the `resource "type" "name"` block a Terraform address comes from, when it can be found."""
+    if not code_dir or not os.path.isdir(code_dir):
+        return None
+    parts = split_address(address)
+    path: list[str] = []
+    while len(parts) >= 3 and parts[0] == "module":
+        path.append(parts[1].split("[", 1)[0])
+        parts = parts[2:]
+    if len(parts) != 2 or parts[0] == "data":
+        return None
+    rtype, name = parts[0], parts[1].split("[", 1)[0]
+    if not path:
+        hits = _declarations(code_dir, rtype, name)
+        return hits[0] if len(hits) == 1 else None
+    modules = _module_dirs(code_dir) if modules is None else modules
+    key = ".".join(path)
+    if key in modules:
+        hits = _declarations(modules[key], rtype, name)
+    else:  # not initialised: accept a match anywhere under the directory only when it is the only one
+        hits = _declarations(code_dir, rtype, name, recursive=True)
+    return hits[0] if len(hits) == 1 else None
+
+
+def _sarif_location(f: Finding, code_dir: str, modules: dict[str, str]) -> dict[str, Any]:
+    logical = {"name": f.address or f.physical_id, "kind": "resource",
+               "fullyQualifiedName": f.address if f.source == "terraform" else (f.physical_id or f.address)}
+    region = None
+    if f.source == "terraform" and (hit := find_declaration(code_dir, f.address, modules)):
+        uri, region = _uri(hit[0]), {"startLine": hit[1]}
+    elif f.source == "terraform" and f.state_source and "://" not in f.state_source and os.path.isfile(f.state_source):
+        uri = _uri(f.state_source)
+    elif f.source == "terraform" and f.location:
+        uri = _uri(f.location)  # the Terraform directory or plan file checked
+    else:  # nothing in the repository: a stable path naming where the resource is
+        where = re.sub(r"[^A-Za-z0-9._-]+", "-", f.location or "global").strip("-") or "global"
+        uri = f"{f.source}/{where}/{re.sub(r'[^A-Za-z0-9._-]+', '-', f.type) or 'resource'}"
+    physical: dict[str, Any] = {"artifactLocation": {"uri": uri}}
+    if region:
+        physical["region"] = region
+    return {"physicalLocation": physical, "logicalLocations": [logical]}
+
+
+def _fingerprint(*parts: str) -> str:
+    import hashlib
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _sarif_message(f: Finding) -> str:
+    where = f" ({f.location})" if f.source in ("cloudformation", "aws") else ""
+    text = f"{f.severity.upper()}: {f.address}{where} ({f.type}) {f.action}: {_changes_text(f)}."
+    if trace_text(f):
+        text += f" {trace_text(f)[0].upper()}{trace_text(f)[1:]}."
+    return f"{text} {f.explanation}".strip()
+
+
+def render_sarif(r: Report) -> str:
+    """SARIF 2.1.0 for GitHub code scanning (upload with github/codeql-action/upload-sarif)."""
+    index = {rid: i for i, (rid, *_rest) in enumerate(SARIF_RULES)}
+    modules = _module_dirs(r.code_dir) if r.code_dir else {}
+    results = []
+    for f in r.sorted():
+        rid = sarif_rule_id(f)
+        key = ([rid, f.type, f.address, f.state_source] if f.source == "terraform"
+               else [rid, f.source, f.type, f.address, f.physical_id, f.location])
+        props = {"severity": f.severity, "resourceType": f.type, "address": f.address, "action": f.action}
+        props.update({k: v for k, v in (("physicalId", f.physical_id), ("stateSource", f.state_source),
+                                        ("module", f.module), ("location", f.location)) if v})
+        results.append({
+            "ruleId": rid, "ruleIndex": index[rid], "level": SARIF_LEVELS[f.severity],
+            "message": {"text": _sarif_message(f)},
+            "locations": [_sarif_location(f, r.code_dir, modules)],
+            "partialFingerprints": {"driftFindingHash/v1": _fingerprint(*key)},
+            "properties": props,
+        })
+    for i in (r.coverage.get("idle") or []) if r.coverage else []:
+        if not i.get("in_iac"):
+            continue  # already a not-in-IaC finding above
+        trace = ", ".join(([f"state {i['state_source']}"] if i.get("state_source") else [])
+                          + ([i["module"]] if i.get("module") else [])
+                          + ([i["stack"]] if i.get("stack") else []))
+        state = i.get("state_source") or ""
+        if state and "://" not in state and os.path.isfile(state):
+            uri = _uri(state)
+        else:
+            uri = f"aws/{i.get('region') or 'global'}/{i['type']}"
+        rid = "drift/idle-in-iac"
+        results.append({
+            "ruleId": rid, "ruleIndex": index[rid], "level": "warning",
+            "message": {"text": f"MEDIUM: {i['type']} {i['id']} ({i.get('region') or 'global'}) is in IaC and idle: "
+                                f"{i['reason']}." + (f" In {trace}." if trace else "")},
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}},
+                           "logicalLocations": [{"name": i.get("address") or i["id"], "kind": "resource",
+                                                 "fullyQualifiedName": i["id"]}]}],
+            "partialFingerprints": {"driftFindingHash/v1": _fingerprint(rid, i["type"], i["id"], i.get("region") or "")},
+            "properties": {"severity": "medium", "resourceType": i["type"], "monthlyUsd": i.get("monthly_usd"),
+                           **{k: i[k] for k in ("state_source", "module", "stack") if i.get(k)}},
+        })
+    rules = [{"id": rid, "name": name, "shortDescription": {"text": short}, "fullDescription": {"text": full},
+              "helpUri": f"{REPO_URL}#readme", "defaultConfiguration": {"level": level},
+              "properties": {"tags": ["drift", "iac"]}}
+             for rid, name, short, full, level in SARIF_RULES]
+    doc = {
+        "$schema": SARIF_SCHEMA, "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {"name": "cloud-drift-report", "version": __version__, "semanticVersion": __version__,
+                                "informationUri": REPO_URL, "rules": rules}},
+            "automationDetails": {"id": f"cloud-drift-report/{r.source}/"},
+            "results": results,
+            "properties": {"target": r.target, "generatedAt": r.generated_at, "footer": FOOTER,
+                           **({"incomplete": r.incomplete} if r.incomplete else {})},
+        }],
+    }
+    return json.dumps(doc, indent=2, default=str) + "\n"
+
+
 RENDERERS = {"md": render_markdown, "csv": render_csv, "json": render_json, "html": render_html,
-             "driftignore": render_driftignore, "imports": render_imports}
+             "driftignore": render_driftignore, "imports": render_imports, "sarif": render_sarif}
 
 
 # --- CLI ------------------------------------------------------------------
@@ -851,7 +1160,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--format", "-f", choices=sorted(RENDERERS), default="md", help="report format (default md)")
     common.add_argument("--output", "-o", action="append", default=[],
                         help="write the report to this file (default stdout); may repeat, and a .md, .csv, "
-                             ".json or .html extension picks that file's format")
+                             ".json or .html extension picks that file's format (.sarif always writes SARIF)")
     common.add_argument("--fail-on-drift", action="store_true", help="exit 2 when drift is found (for CI)")
     common.add_argument("--ignore", action="append", default=[], metavar="FILE",
                         help="ignore rules (driftctl .driftignore syntax); may repeat "
@@ -959,6 +1268,15 @@ def read_state(src: str, base, session, read, problems: list[str] | None = None)
                                f"or with the assumed role ({assumed}).") from assumed
 
 
+def _matched_trace(entry) -> dict[str, str]:
+    """Where a matched resource is managed: its state file and module (Terraform), or its stack (CloudFormation)."""
+    if entry is None:
+        return {}
+    if entry.cc_type:
+        return {"stack": entry.where}
+    return {"state_source": entry.where, "address": entry.address, "module": entry.module}
+
+
 def run_unmanaged(args, log=print) -> Report:
     import aws_inventory as inv_mod
 
@@ -1040,11 +1358,11 @@ def run_unmanaged(args, log=print) -> Report:
             action=UNMANAGED, physical_id=res.arn or res.identifier, tags=inv_mod._tag_map(res.props.get("Tags")),
             import_id=inv_mod.import_id(res, account)))
         if id(res) in owned:
-            f.severity = "low"
+            f.severity, f.kind = "low", "aws-created"
             f.explanation = f"AWS created this ({owned[id(res)]}); shown because of --strict."
         elif id(res) in idle:  # costs money for nothing, and nobody's code owns it
             label = inv_mod.idle_label(res)  # anything short of certainly idle is medium
-            f.severity = "high" if label == "idle" else "medium"
+            f.severity, f.kind = ("high" if label == "idle" else "medium"), "idle"
             f.explanation = f"Not in IaC and {label}: {idle[id(res)][0]}."
         findings.append(f)
     duplicates = inv_mod.duplicate_imports(iac)
@@ -1064,7 +1382,8 @@ def run_unmanaged(args, log=print) -> Report:
         "regions": regions, "iac_sources": sources, "not_listed": inventory.not_listed or None,
         "by_type": dict(sorted(by_type.items())) or None, "duplicate_imports": duplicates or None,
         "idle": [{"type": res.tf_type, "id": res.identifier, "region": res.region, "in_iac": id(res) not in unmanaged,
-                  "reason": idle[id(res)][0], "monthly_usd": round(idle[id(res)][1], 2)}
+                  "reason": idle[id(res)][0], "monthly_usd": round(idle[id(res)][1], 2),
+                  **_matched_trace(result.entries.get(id(res)))}
                  for res in inventory.resources if id(res) in idle] or None,
     }
     return Report(findings, "aws", f"{account or 'AWS account'} ({', '.join(regions)})", coverage=coverage,
@@ -1182,7 +1501,10 @@ def main(argv: list[str] | None = None) -> int:
                 directory = os.path.abspath(args.dir or ".")
                 extra = [f"-var-file={v}" for v in args.var_file]
                 findings, target = run_terraform(directory, args.binary, extra, profile=args.profile), directory
-            report = Report(findings, "terraform", target)
+                source = state_source_of(directory)
+                for f in findings:
+                    f.state_source = source
+            report = Report(findings, "terraform", target, code_dir="" if args.plan_json else directory)
         elif args.mode in ("unmanaged", "scan"):
             report = run_unmanaged(args)
         else:
@@ -1221,6 +1543,8 @@ def main(argv: list[str] | None = None) -> int:
             fmt = "driftignore"
         elif ext == "tf":  # never write a report into Terraform code
             fmt = "imports"
+        elif ext == "sarif":  # code scanning reads only SARIF from a .sarif file
+            fmt = "sarif"
         with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.write(RENDERERS[fmt](report))
         if fmt == "json":

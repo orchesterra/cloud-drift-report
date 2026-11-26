@@ -626,7 +626,14 @@ def test_cli_flags_idle_nat_and_eip_in_and_out_of_iac(tmp_path, monkeypatch):
     costs = {i["id"]: i["monthly_usd"] for i in doc["coverage"]["idle"]}
     assert costs == {"nat-idle": 38.69, "nat-idle-tf": 35.04, "eipalloc-spare": 4.38}
     line = dr.coverage_line(doc["coverage"])
-    assert "Idle and still billing: " in line and "aws_nat_gateway nat-idle-tf (in IaC)" in line
+    assert "Idle and still billing: " in line and f"aws_nat_gateway nat-idle-tf (in IaC: in state: {state_file})" in line
+    tf_idle = next(i for i in doc["coverage"]["idle"] if i["in_iac"])
+    assert (tf_idle["state_source"], tf_idle["address"], tf_idle["module"]) == (str(state_file), "aws_nat_gateway.main", "")
+    assert "state_source" not in found["nat-idle"] and "module" not in found["nat-idle"]  # not-in-IaC rows unchanged
+    sarif = json.loads(dr.render_sarif(dr.Report([], "aws", "x", coverage=doc["coverage"])))
+    (res,) = sarif["runs"][0]["results"]
+    assert res["ruleId"] == "drift/idle-in-iac" and "nat-idle-tf" in res["message"]["text"]
+    assert res["properties"]["state_source"] == str(state_file)
 
 
 def _quiet_aws(calls):

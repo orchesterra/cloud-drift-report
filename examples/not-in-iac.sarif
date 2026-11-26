@@ -1,0 +1,358 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "cloud-drift-report",
+          "version": "0.8.0",
+          "semanticVersion": "0.8.0",
+          "informationUri": "https://github.com/orchesterra/cloud-drift-report",
+          "rules": [
+            {
+              "id": "drift/changed-outside-iac",
+              "name": "ChangedOutsideIaC",
+              "shortDescription": {
+                "text": "Resource changed outside IaC"
+              },
+              "fullDescription": {
+                "text": "The live resource no longer matches its Terraform state or CloudFormation template: someone changed it in the console, CLI or another tool. Put the change in code, or revert it."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/deleted-outside-iac",
+              "name": "DeletedOutsideIaC",
+              "shortDescription": {
+                "text": "Resource deleted outside IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is in Terraform state or a CloudFormation stack but no longer exists in the cloud."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/not-in-iac",
+              "name": "NotInIaC",
+              "shortDescription": {
+                "text": "Resource not in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource exists in the AWS account but no Terraform state file or CloudFormation stack checked lists it. Import it into Terraform, or delete it if nobody needs it."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/idle-not-in-iac",
+              "name": "IdleNotInIaC",
+              "shortDescription": {
+                "text": "Idle resource not in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is in no IaC and looks idle while it still bills."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/aws-created",
+              "name": "AwsCreatedResource",
+              "shortDescription": {
+                "text": "Resource AWS created itself"
+              },
+              "fullDescription": {
+                "text": "AWS created this resource (a default VPC, a service-linked role, ...). Reported because of --strict."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            },
+            {
+              "id": "drift/idle-in-iac",
+              "name": "IdleInIaC",
+              "shortDescription": {
+                "text": "Idle resource in IaC"
+              },
+              "fullDescription": {
+                "text": "The resource is managed by IaC but looks idle while it still bills."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "automationDetails": {
+        "id": "cloud-drift-report/aws/"
+      },
+      "results": [
+        {
+          "ruleId": "drift/not-in-iac",
+          "ruleIndex": 2,
+          "level": "error",
+          "message": {
+            "text": "HIGH: ci-deploy-user (global) (aws_iam_user) not in IaC: arn:aws:iam::111111111111:user/ci-deploy-user is in no state file or stack checked. Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "aws/global/aws_iam_user"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "ci-deploy-user",
+                  "kind": "resource",
+                  "fullyQualifiedName": "arn:aws:iam::111111111111:user/ci-deploy-user"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "ddbc4c21794e084581dbd20de861d0d9e3f3bfb0f711d7671fd46a8bde4086e2"
+          },
+          "properties": {
+            "severity": "high",
+            "resourceType": "aws_iam_user",
+            "address": "ci-deploy-user",
+            "action": "not in IaC",
+            "physicalId": "arn:aws:iam::111111111111:user/ci-deploy-user",
+            "location": "global"
+          }
+        },
+        {
+          "ruleId": "drift/not-in-iac",
+          "ruleIndex": 2,
+          "level": "error",
+          "message": {
+            "text": "HIGH: temp-debug-sg (us-east-1) (aws_security_group) not in IaC: sg-0a1b2c3d4e5f60718 is in no state file or stack checked. Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "aws/us-east-1/aws_security_group"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "temp-debug-sg",
+                  "kind": "resource",
+                  "fullyQualifiedName": "sg-0a1b2c3d4e5f60718"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "ab8ac1010afd7ab2dd99ec200dde1a405e1ab0c29cef3a525876e6a2ecea4f96"
+          },
+          "properties": {
+            "severity": "high",
+            "resourceType": "aws_security_group",
+            "address": "temp-debug-sg",
+            "action": "not in IaC",
+            "physicalId": "sg-0a1b2c3d4e5f60718",
+            "location": "us-east-1"
+          }
+        },
+        {
+          "ruleId": "drift/not-in-iac",
+          "ruleIndex": 2,
+          "level": "warning",
+          "message": {
+            "text": "MEDIUM: bastion (us-east-1) (aws_instance) not in IaC: i-0123456789abcdef0 is in no state file or stack checked. Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "aws/us-east-1/aws_instance"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "bastion",
+                  "kind": "resource",
+                  "fullyQualifiedName": "i-0123456789abcdef0"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "760f20985ccadb2c73e312e1cd4e60bd55350c0f5da35875593656871fda3b28"
+          },
+          "properties": {
+            "severity": "medium",
+            "resourceType": "aws_instance",
+            "address": "bastion",
+            "action": "not in IaC",
+            "physicalId": "i-0123456789abcdef0",
+            "location": "us-east-1"
+          }
+        },
+        {
+          "ruleId": "drift/not-in-iac",
+          "ruleIndex": 2,
+          "level": "warning",
+          "message": {
+            "text": "MEDIUM: marketing-exports (us-east-1) (aws_s3_bucket) not in IaC: marketing-exports is in no state file or stack checked. Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "aws/us-east-1/aws_s3_bucket"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "marketing-exports",
+                  "kind": "resource",
+                  "fullyQualifiedName": "marketing-exports"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "8949564819a6c4eeaa6e423ee55cd3afde11edb57fda7c3fed01a9a048f4ee99"
+          },
+          "properties": {
+            "severity": "medium",
+            "resourceType": "aws_s3_bucket",
+            "address": "marketing-exports",
+            "action": "not in IaC",
+            "physicalId": "marketing-exports",
+            "location": "us-east-1"
+          }
+        },
+        {
+          "ruleId": "drift/not-in-iac",
+          "ruleIndex": 2,
+          "level": "warning",
+          "message": {
+            "text": "MEDIUM: orders-replay (us-east-1) (aws_sqs_queue) not in IaC: https://sqs.us-east-1.amazonaws.com/111111111111/orders-replay is in no state file or stack checked. Exists in AWS but no state file or stack checked lists it; likely created in the console, the CLI or another tool."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "aws/us-east-1/aws_sqs_queue"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "orders-replay",
+                  "kind": "resource",
+                  "fullyQualifiedName": "https://sqs.us-east-1.amazonaws.com/111111111111/orders-replay"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "049ec0e809410677c8612b3d4a6a09902a1f2dfcefe48e5afefeb48e2d886b4f"
+          },
+          "properties": {
+            "severity": "medium",
+            "resourceType": "aws_sqs_queue",
+            "address": "orders-replay",
+            "action": "not in IaC",
+            "physicalId": "https://sqs.us-east-1.amazonaws.com/111111111111/orders-replay",
+            "location": "us-east-1"
+          }
+        },
+        {
+          "ruleId": "drift/not-in-iac",
+          "ruleIndex": 2,
+          "level": "note",
+          "message": {
+            "text": "LOW: /aws/lambda/resize-images (us-east-1) (aws_cloudwatch_log_group) not in IaC: arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/resize-images:* is in no state file or stack checked. Log group an AWS service created for one of your resources; manage it in IaC if you want retention and encryption under control."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "aws/us-east-1/aws_cloudwatch_log_group"
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "/aws/lambda/resize-images",
+                  "kind": "resource",
+                  "fullyQualifiedName": "arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/resize-images:*"
+                }
+              ]
+            }
+          ],
+          "partialFingerprints": {
+            "driftFindingHash/v1": "874ca5345b3051e898661a7839c183cdd6268f6b105f69d4441663a7d9bc0ab9"
+          },
+          "properties": {
+            "severity": "low",
+            "resourceType": "aws_cloudwatch_log_group",
+            "address": "/aws/lambda/resize-images",
+            "action": "not in IaC",
+            "physicalId": "arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/resize-images:*",
+            "location": "us-east-1"
+          }
+        }
+      ],
+      "properties": {
+        "target": "111111111111 (us-east-1)",
+        "generatedAt": "2026-11-20 09:00 UTC",
+        "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs \u2192 https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
+      }
+    }
+  ]
+}
