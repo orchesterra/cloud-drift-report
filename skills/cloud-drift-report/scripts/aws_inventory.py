@@ -1211,6 +1211,21 @@ class Prices:
 
     def _read(self, kind: str, region: str) -> float | None:
         service, usage, extra = _PRICE_QUERIES[kind]
+        return self._query(service, region, extra, lambda ut: _usage_matches(ut, usage))
+
+    def find(self, key: str, service: str, region: str, extra: dict[str, str],
+             matches: Callable[[str], bool]) -> float | None:
+        """A live price other modules ask for (e.g. extended support), cached under `key`; None when unreadable."""
+        if not self.failed and (key, region) not in self._cache:
+            try:
+                self._cache[(key, region)] = self._query(service, region, extra, matches)
+            except Exception as exc:
+                self.failed = True
+                self._log(f"note: could not read AWS prices ({_short_reason(str(exc))}); costs use us-east-1 list prices. "
+                          "Live prices need pricing:GetProducts (in ReadOnlyAccess).", file=sys.stderr)
+        return self._cache.get((key, region))
+
+    def _query(self, service: str, region: str, extra: dict[str, str], matches: Callable[[str], bool]) -> float | None:
         if self._client is None:
             try:
                 from botocore.config import Config
@@ -1224,7 +1239,7 @@ class Prices:
         filters += [{"Type": "TERM_MATCH", "Field": k, "Value": v} for k, v in extra.items()]
         for raw in self._client.get_products(ServiceCode=service, Filters=filters, MaxResults=100).get("PriceList", []):
             product = json.loads(raw) if isinstance(raw, str) else raw
-            if not _usage_matches(str(product.get("product", {}).get("attributes", {}).get("usagetype", "")), usage):
+            if not matches(str(product.get("product", {}).get("attributes", {}).get("usagetype", ""))):
                 continue
             for term in product.get("terms", {}).get("OnDemand", {}).values():
                 for dim in term.get("priceDimensions", {}).values():

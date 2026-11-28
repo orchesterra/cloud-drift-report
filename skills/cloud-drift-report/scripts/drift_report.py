@@ -581,6 +581,15 @@ def apply_ignore(report: "Report", rules: list, files: list[str] | None = None) 
             finalize(f)
         kept.append(f)
     report.findings = kept
+    if report.eol is not None:
+        eol_kept = []
+        for f in report.eol.findings:
+            outcome = ignore.evaluate(rules, f)
+            if outcome.ignored:
+                report.ignored.append((f, outcome.rule))
+            else:
+                eol_kept.append(f)
+        report.eol.findings = eol_kept
     if report.coverage:
         report.coverage["not_in_iac"] = len(kept)
         report.coverage["ignored"] = len(report.ignored)
@@ -602,6 +611,8 @@ class Report:
     ignore_text: str = ""  # the rules as written, kept when a new .driftignore is generated
     incomplete: list[str] = field(default_factory=list)  # what the scan couldn't read
     code_dir: str = ""  # Terraform directory, to point SARIF results at the code declaring a resource
+    eol: Any = None  # eol.EolResult when the end-of-life check ran
+    eol_only: bool = False  # --eol-only: no not-in-IaC listing
 
     def incomplete_line(self) -> str:
         if not self.incomplete:
@@ -619,6 +630,9 @@ class Report:
                 " (run with --no-ignore to see everything).")
 
     def noun(self, n: int | None = None) -> str:
+        if self.eol_only:
+            n = len(self.eol.findings) if n is None else n
+            return f"{n} resource{'' if n == 1 else 's'} past or near end of life"
         n = len(self.findings) if n is None else n
         if self.source == "aws":
             return f"{n} resource{'' if n == 1 else 's'} not in IaC"
@@ -626,7 +640,7 @@ class Report:
 
     def counts(self) -> dict[str, int]:
         c = {s: 0 for s in SEVERITIES}
-        for f in self.findings:
+        for f in (self.eol.findings if self.eol_only else self.findings):
             c[f.severity] += 1
         return c
 
@@ -690,6 +704,11 @@ def coverage_line(cov: dict[str, Any]) -> str:
 
 def render_markdown(r: Report) -> str:
     c = r.counts()
+    if r.eol_only:
+        import eol
+        return "\n".join([f"# End of life: {r.target}", "", f"Source: AWS account scan · Generated: {r.generated_at}"]
+                         + (["", r.ignored_line()] if r.ignored else []) + eol.markdown(r.eol)[2:]
+                         + ["", "---", FOOTER, ""])
     out = [f"# {'Not in IaC' if r.source == 'aws' else 'Drift report'}: {r.target}", "",
            f"Source: {'AWS account scan' if r.source == 'aws' else r.source} · Generated: {r.generated_at}", ""]
     if r.incomplete:
@@ -722,6 +741,9 @@ def render_markdown(r: Report) -> str:
             out.append("| " + " | ".join(_md_cell(x) for x in (
                 f.severity.upper(), res, f.type, f.action, _changes_text(f, "<br>"), f.explanation)) + " |")
         out += ["", r.pr_line()]
+    if r.eol is not None:
+        import eol
+        out += eol.markdown(r.eol)
     out += ["", "---", FOOTER, ""]
     return "\n".join(out)
 
@@ -741,6 +763,9 @@ def render_csv(r: Report) -> str:
                         ch.path, "" if ch.before is None else _fmt_value(ch.before, 10_000),
                         "" if ch.after is None else _fmt_value(ch.after, 10_000), f.explanation,
                         f.state_source, f.module])
+    if r.eol is not None:
+        import eol
+        w.writerows(eol.csv_rows(r.eol))
     w.writerow([])
     if r.ignored:
         w.writerow([f"# {r.ignored_line()}"])
@@ -760,6 +785,13 @@ def _finding_json(f: Finding) -> dict[str, Any]:
     return d
 
 
+def _eol_json(r: Report) -> dict[str, Any] | None:
+    if r.eol is None:
+        return None
+    import eol
+    return eol.json_section(r.eol)
+
+
 def render_json(r: Report) -> str:
     doc = {
         "tool": "cloud-drift-report", "version": __version__, "source": r.source, "target": r.target,
@@ -770,6 +802,7 @@ def render_json(r: Report) -> str:
         "coverage": r.coverage or None,
         "incomplete": r.incomplete or None,
         "findings": [_finding_json(f) for f in r.sorted()],
+        "end_of_life": _eol_json(r),
         "ignored": [{"type": f.type, "address": f.address, "physical_id": f.physical_id, "location": f.location,
                      "rule": rule} for f, rule in r.ignored] or None,
         "note": r.pr_line() or None, "footer": FOOTER,
@@ -862,12 +895,16 @@ def render_html(r: Report) -> str:
                else "<strong>No resources found.</strong>") if r.source == "aws"
               else "<strong>No drift found.</strong> Everything matches the code.")
         body = checked + f"<div class=ok>{ok}</div>"
+    if r.eol is not None:
+        import eol
+        section = eol.html_section(r.eol)
+        body = checked + section if r.eol_only else body + section
     footer_html = _linkify(FOOTER)
     return (
         "<!doctype html><html lang=en><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        f"<title>{'Not-in-IaC report' if r.source == 'aws' else 'Drift report'}</title><style>{_HTML_CSS}</style></head><body><main>"
-        f"<h1>{'Not in IaC' if r.source == 'aws' else 'Drift report'}: {e(r.target)}</h1>"
+        f"<title>{'End-of-life report' if r.eol_only else 'Not-in-IaC report' if r.source == 'aws' else 'Drift report'}</title><style>{_HTML_CSS}</style></head><body><main>"
+        f"<h1>{'End of life' if r.eol_only else 'Not in IaC' if r.source == 'aws' else 'Drift report'}: {e(r.target)}</h1>"
         f"<p class=meta>{e('AWS account scan' if r.source == 'aws' else r.source.title())} · generated {e(r.generated_at)} · read-only check by cloud-drift-report {__version__}</p>"
         + (f"<p class=warn role=alert><strong>Warning:</strong> {e(r.incomplete_line())}</p>" if r.incomplete else "")
         + f"{body}<footer>{footer_html}</footer></main><script>{_HTML_JS}</script></body></html>\n")
@@ -959,6 +996,9 @@ SARIF_RULES = [
      "AWS created this resource (a default VPC, a service-linked role, ...). Reported because of --strict.", "note"),
     ("drift/idle-in-iac", "IdleInIaC", "Idle resource in IaC",
      "The resource is managed by IaC but looks idle while it still bills.", "warning"),
+    ("drift/end-of-life", "EndOfLife", "Version past or near end of life",
+     "The resource runs an engine, Kubernetes or runtime version that AWS has retired, bills extended support "
+     "for, or retires within 90 days. Upgrade it.", "warning"),
 ]
 
 
@@ -1109,6 +1149,19 @@ def render_sarif(r: Report) -> str:
             "properties": {"severity": "medium", "resourceType": i["type"], "monthlyUsd": i.get("monthly_usd"),
                            **{k: i[k] for k in ("state_source", "module", "stack") if i.get(k)}},
         })
+    for f in (r.eol.sorted() if r.eol is not None else []):
+        rid = "drift/end-of-life"
+        results.append({
+            "ruleId": rid, "ruleIndex": index[rid], "level": SARIF_LEVELS[f.severity],
+            "message": {"text": f"{f.severity.upper()}: {f.address} ({f.location}, {f.type}) runs {f.version}, "
+                                f"{f.status}: {f.explanation}"},
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": f"aws/{f.location}/{f.type}"}},
+                           "logicalLocations": [{"name": f.address, "kind": "resource",
+                                                 "fullyQualifiedName": f.physical_id}]}],
+            "partialFingerprints": {"driftFindingHash/v1": _fingerprint(rid, f.type, f.physical_id, f.location)},
+            "properties": {"severity": f.severity, "resourceType": f.type, "status": f.status, "version": f.version,
+                           "ends": f.ends, **({"monthlyUsd": round(f.monthly_usd, 2)} if f.monthly_usd is not None else {})},
+        })
     rules = [{"id": rid, "name": name, "shortDescription": {"text": short}, "fullDescription": {"text": full},
               "helpUri": f"{REPO_URL}#readme", "defaultConfiguration": {"level": level},
               "properties": {"tags": ["drift", "iac"]}}
@@ -1217,6 +1270,12 @@ def build_parser() -> argparse.ArgumentParser:
     un.add_argument("--type", "-t", action="append", default=[],
                     help="only these types (Terraform or CloudFormation name, substring match); may repeat")
     un.add_argument("--workers", type=int, default=4, help="parallel list calls (default 4)")
+    eol_group = un.add_mutually_exclusive_group()
+    eol_group.add_argument("--eol-only", action="store_true",
+                           help="only check for end-of-life versions (RDS/Aurora engines, EKS Kubernetes, Lambda runtimes)")
+    eol_group.add_argument("--no-eol", action="store_true", help="skip the end-of-life check")
+    un.add_argument("--eol-data", metavar="FILE",
+                    help="JSON with lambda_runtimes deprecation dates laid over the built-in table")
     return p
 
 
@@ -1294,6 +1353,8 @@ def run_unmanaged(args, log=print) -> Report:
     regions = inv_mod.enabled_regions(session) if args.all_regions else (args.region or [session.region_name])
     if not args.all_regions:
         inv_mod.check_regions(session, regions, log=log)
+    if getattr(args, "eol_only", False):
+        return run_eol(args, session, regions, inv_mod.Prices(session, log=log), log=log)
     iac: list = []
     sources: list[str] = []
     problems: list[str] = []
@@ -1395,8 +1456,27 @@ def run_unmanaged(args, log=print) -> Report:
                   **_matched_trace(result.entries.get(id(res)))}
                  for res in inventory.resources if id(res) in idle] or None,
     }
-    return Report(findings, "aws", f"{account or 'AWS account'} ({', '.join(regions)})", coverage=coverage,
-                  incomplete=problems)
+    report = Report(findings, "aws", f"{account or 'AWS account'} ({', '.join(regions)})", coverage=coverage,
+                    incomplete=problems)
+    if not getattr(args, "no_eol", False):
+        report.eol = run_eol(args, session, regions, prices, account=account, log=log).eol
+    return report
+
+
+def run_eol(args, session, regions: list[str], prices, account: str | None = None, log=print) -> Report:
+    """The end-of-life check (eol.py) as a report of its own; run_unmanaged attaches it to the not-in-IaC report."""
+    import eol
+
+    if account is None:
+        try:
+            account = session.client("sts").get_caller_identity()["Account"]
+        except Exception:
+            account = ""
+    table = eol.load_overrides(getattr(args, "eol_data", None))
+    result = eol.scan(session, regions, prices, table, log=log)
+    log(eol.summary_line(result), file=sys.stderr)
+    return Report([], "aws", f"{account or 'AWS account'} ({', '.join(regions)})", eol=result,
+                  eol_only=bool(getattr(args, "eol_only", False)))
 
 
 def ignore_files(args) -> list[str]:
@@ -1415,7 +1495,7 @@ def ignore_files(args) -> list[str]:
 CONFIG_NAMES = (".driftreport.yml", ".driftreport.yaml")
 CONFIG_SECTIONS = {"terraform": "terraform", "tf": "terraform", "tofu": "terraform", "cloudformation": "cloudformation",
                    "cfn": "cloudformation", "unmanaged": "unmanaged", "scan": "unmanaged"}
-_CONFIG_PATHS = {"output", "ignore", "var_file", "dir", "plan_json", "state"}  # relative to the config file
+_CONFIG_PATHS = {"output", "ignore", "var_file", "dir", "plan_json", "state", "eol_data"}  # relative to the config file
 
 
 def config_path(args) -> str | None:
@@ -1568,7 +1648,8 @@ def main(argv: list[str] | None = None) -> int:
         share_report(json_paths)
     elif json_paths and report.findings:
         print(import_hint(json_paths[0]), file=sys.stderr)
-    return 2 if args.fail_on_drift and report.findings else 0
+    found = report.findings or (report.eol_only and report.eol is not None and report.eol.findings)
+    return 2 if args.fail_on_drift and found else 0
 
 
 if __name__ == "__main__":

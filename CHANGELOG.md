@@ -5,6 +5,17 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- End-of-life warnings in `scan`/`unmanaged`: RDS and Aurora MySQL/PostgreSQL engine versions (standard and
+  extended support dates from `rds:DescribeDBMajorEngineVersions`), EKS Kubernetes versions
+  (`eks:DescribeClusterVersions` and the cluster's upgrade policy) and Lambda runtimes (AWS's published
+  deprecation table, dated, overridable with `--eol-data FILE`). Each is past end of life (high), in paid
+  extended support (medium) or ends within 90 days (low), with the monthly extended support cost from the
+  Price List API (per vCPU-hour, ACU-hour for Aurora Serverless v2, per cluster-hour for EKS; us-east-1 list
+  price when it can't be read). A section in Markdown, HTML, JSON (`end_of_life`) and CSV, and the SARIF rule
+  `drift/end-of-life`. `--eol-only` runs only this check; `--no-eol` skips it. `.driftignore` and
+  `.driftreport.yml` apply. A service that can't be read is listed under "Not checked".
+
 ## [0.9.1] - 2026-11-28
 
 ### Fixed
