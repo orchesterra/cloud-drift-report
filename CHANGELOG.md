@@ -5,6 +5,14 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- Terragrunt: `tf --dir` runs through Terragrunt when the folder has a `terragrunt.hcl` (one unit) or a
+  `root.hcl` (a stack), with OpenTofu as the tf path. `--all` checks every unit under the folder with
+  `run --all` / `run-all` and reports them together; each finding records its `unit` (JSON, Markdown, HTML,
+  SARIF location `<unit>/terragrunt.hcl`). Works with the redesigned CLI (0.78 and later, `run -- plan`,
+  `--tf-path`) and the older one (`run-all`, `--terragrunt-tfpath`), picked from `terragrunt --version`.
+  `--terragrunt` / `--no-terragrunt` override the detection and `--terragrunt-bin` picks the binary.
+
 ## [0.9.1] - 2026-11-28
 
 ### Fixed
