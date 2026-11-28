@@ -47,6 +47,9 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
      `--var-file x.tfvars` if the config needs variables). AWS credentials come from the environment,
      e.g. `AWS_PROFILE=<profile>`.
    - Or for a saved plan: `DRIFT terraform --plan-json plan.json --format md`.
+   - Terragrunt (`terragrunt.hcl` or `root.hcl` in the directory): the same command runs through Terragrunt
+     with OpenTofu as its tf path, and Terragrunt initialises units itself. For every unit under a stack
+     folder add `--all`; each finding names its unit. `--no-terragrunt` runs OpenTofu directly instead.
 3. CloudFormation:
    - `DRIFT cloudformation --profile <profile> --region <region> [--stack NAME ...] --format md`.
      With no `--stack` it checks every top-level stack in the region. Each check can take a minute.

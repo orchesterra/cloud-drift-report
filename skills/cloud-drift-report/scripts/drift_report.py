@@ -124,6 +124,7 @@ class Finding:
     state_source: str = ""  # Terraform: the state this resource is in (s3://..., a local path, host/org/workspace)
     module: str = ""        # Terraform: module path (module.x.module.y), "" for the root module
     kind: str = field(default="", repr=False)  # not-in-IaC scan: "idle" or "aws-created"; not in reports
+    unit: str = ""          # Terragrunt: the unit directory the resource is planned from ("" without Terragrunt)
 
 
 def split_address(address: str) -> list[str]:
@@ -167,7 +168,8 @@ def module_of(address: str) -> str:
 
 def trace_text(f: Finding) -> str:
     """Where a Terraform resource lives: "in state: s3://b/env:/prod/terraform.tfstate, module.network"."""
-    bits = ([f"in state: {f.state_source}"] if f.state_source else []) + ([f.module] if f.module else [])
+    bits = (([f"unit: {f.unit}"] if f.unit else []) + ([f"in state: {f.state_source}"] if f.state_source else [])
+            + ([f.module] if f.module else []))
     return ", ".join(bits)
 
 
@@ -411,6 +413,22 @@ def run_terraform(directory: str, binary: str | None = None, extra_args: list[st
         if show.returncode != 0:
             raise RuntimeError(f"`{tf} show -json` failed:\n{show.stderr or show.stdout}")
     return parse_plan_json(json.loads(show.stdout), location=directory)
+
+
+def run_terragrunt(directory: str, args, runner=None) -> "Report":
+    """`tf` mode through Terragrunt (see terragrunt.py): one unit, or every unit of a stack with --all."""
+    import terragrunt
+
+    extra = [f"-var-file={v if os.path.isabs(v) else os.path.join(directory, v)}" for v in args.var_file]
+    findings, problems = terragrunt.run(
+        directory, all_units=args.all, binary=args.terragrunt_bin, tf_binary=find_tf_binary(args.binary),
+        extra_args=extra, profile=args.profile, runner=runner or subprocess.run, parse=parse_plan_json, shown=_shown_path,
+        log=lambda m: print(m, file=sys.stderr))
+    for f in findings:
+        unit_dir = os.path.abspath(f.unit) if f.unit else directory
+        cache = terragrunt.cache_dir(unit_dir)
+        f.state_source = state_source_of(cache) if cache else ""
+    return Report(findings, "terraform", directory, incomplete=problems)
 
 
 def _current_workspace(directory: str) -> str:
@@ -754,6 +772,8 @@ def _finding_json(f: Finding) -> dict[str, Any]:
     d.pop("kind", None)
     if not d["import_id"]:
         d.pop("import_id")
+    if not d["unit"]:
+        d.pop("unit")
     if f.source != "terraform":  # state and module only mean something for Terraform resources
         d.pop("state_source")
         d.pop("module")
@@ -1039,7 +1059,10 @@ def _sarif_location(f: Finding, code_dir: str, modules: dict[str, str]) -> dict[
     logical = {"name": f.address or f.physical_id, "kind": "resource",
                "fullyQualifiedName": f.address if f.source == "terraform" else (f.physical_id or f.address)}
     region = None
-    if f.source == "terraform" and (hit := find_declaration(code_dir, f.address, modules)):
+    if f.unit:  # Terragrunt: the unit's terragrunt.hcl; the module code may not be in the repository
+        logical["fullyQualifiedName"] = f"{f.unit}//{f.address}"
+        uri = _uri(os.path.join(f.unit, "terragrunt.hcl"))
+    elif f.source == "terraform" and (hit := find_declaration(code_dir, f.address, modules)):
         uri, region = _uri(hit[0]), {"startLine": hit[1]}
     elif f.source == "terraform" and f.state_source and "://" not in f.state_source and os.path.isfile(f.state_source):
         uri = _uri(f.state_source)
@@ -1074,11 +1097,12 @@ def render_sarif(r: Report) -> str:
     results = []
     for f in r.sorted():
         rid = sarif_rule_id(f)
-        key = ([rid, f.type, f.address, f.state_source] if f.source == "terraform"
+        key = ([rid, f.type, f.address, f.state_source] + ([f.unit] if f.unit else []) if f.source == "terraform"
                else [rid, f.source, f.type, f.address, f.physical_id, f.location])
         props = {"severity": f.severity, "resourceType": f.type, "address": f.address, "action": f.action}
         props.update({k: v for k, v in (("physicalId", f.physical_id), ("stateSource", f.state_source),
-                                        ("module", f.module), ("location", f.location)) if v})
+                                        ("module", f.module), ("location", f.location),
+                                        ("unit", f.unit)) if v})
         results.append({
             "ruleId": rid, "ruleIndex": index[rid], "level": SARIF_LEVELS[f.severity],
             "message": {"text": _sarif_message(f)},
@@ -1190,6 +1214,8 @@ def build_parser() -> argparse.ArgumentParser:
     tf.add_argument("--binary", choices=["tofu", "terraform"], help="which CLI to run (default: tofu, then terraform)")
     tf.add_argument("--var-file", action="append", default=[], help="passed through to plan; may repeat")
     tf.add_argument("--profile", "-p", help="AWS profile for the AWS provider (sets AWS_PROFILE; default: env/default)")
+    import terragrunt
+    terragrunt.add_args(tf)
 
     cf = sub.add_parser("cloudformation", aliases=["cfn"], parents=[common],
                         help="run CloudFormation drift detection on stacks")
@@ -1504,16 +1530,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"using {os.path.relpath(used_config)}", file=sys.stderr)
     try:
         if args.mode in ("terraform", "tf", "tofu"):
+            import terragrunt
+            directory = os.path.abspath(args.dir or ".")
+            extra = [f"-var-file={v}" for v in args.var_file]
             if args.plan_json:
-                findings, target = load_plan_file(args.plan_json), args.plan_json
+                findings = load_plan_file(args.plan_json)
+                report = Report(findings, "terraform", args.plan_json)
+            elif terragrunt.wanted(args, directory):
+                report = run_terragrunt(directory, args)
             else:
-                directory = os.path.abspath(args.dir or ".")
-                extra = [f"-var-file={v}" for v in args.var_file]
-                findings, target = run_terraform(directory, args.binary, extra, profile=args.profile), directory
+                findings = run_terraform(directory, args.binary, extra, profile=args.profile)
                 source = state_source_of(directory)
                 for f in findings:
                     f.state_source = source
-            report = Report(findings, "terraform", target, code_dir="" if args.plan_json else directory)
+                report = Report(findings, "terraform", directory, code_dir=directory)
         elif args.mode in ("unmanaged", "scan"):
             report = run_unmanaged(args)
         else:

@@ -311,6 +311,32 @@ a Terraform directory you run it from is used. It may repeat. A source or file t
 the run stops only when no `--state` can be read. Without `--state` and outside Terraform code, only
 CloudFormation stacks count as IaC.
 
+## Terragrunt
+
+When `--dir` holds a `terragrunt.hcl` (one unit) or a `root.hcl` (a stack), the `terraform` mode runs through
+Terragrunt with OpenTofu as its tf path (Terraform when `tofu` isn't installed, or with `--binary terraform`):
+
+```bash
+# One unit
+cloud-drift-report tf --dir live/prod/vpc
+
+# Every unit under a stack folder, one report; each finding names its unit
+cloud-drift-report tf --dir live/prod --all --format html -o drift.html
+```
+
+- One unit: `terragrunt plan -refresh-only -lock=false -out=<temp file>` and `terragrunt show -json`.
+  `--all`: `run --all` (or `run-all`) of the same plan, then `show -json` in each unit; `dependency` blocks
+  are resolved by Terragrunt as usual. A unit that produced no plan is named in the incomplete-scan warning.
+- Terragrunt 0.78 and later get the redesigned CLI (`run --all -- plan`, `--tf-path`, `TG_TF_PATH`); older
+  releases get `run-all plan`, `--terragrunt-tfpath` and `TERRAGRUNT_TFPATH`. The version comes from
+  `terragrunt --version`. CI checks 0.72, 0.80 and 1.2.
+- Each finding has a `unit` (JSON, and "unit: live/prod/vpc" in Markdown and HTML). SARIF results point at the
+  unit's `terragrunt.hcl`, and the logical name is `<unit>//<address>`.
+- `--no-terragrunt` runs OpenTofu directly in a folder that has a `terragrunt.hcl`; `--terragrunt` forces
+  Terragrunt; `--terragrunt-bin PATH` picks the binary.
+- Terragrunt initialises units itself. It is never given `--non-interactive`, and stdin is closed, so it
+  can't answer "yes" to creating a state bucket; a prompt like that fails the run instead.
+
 ## Settings file: `.driftreport.yml`
 
 Instead of repeating flags, put them in `.driftreport.yml` in the current directory (or in `--dir` for
@@ -426,7 +452,7 @@ Regenerate them with `python3 examples/generate.py`.
 
 ## Safety
 
-- Terraform: only `plan -refresh-only -lock=false` and `show -json` (plus a read-only `state pull` when the
+- Terraform (directly or through Terragrunt): only `plan -refresh-only -lock=false` and `show -json` (plus a read-only `state pull` when the
   not-in-IaC scan's `--state` is a directory). No `apply`, `import`, `refresh` or state-changing `state` commands. The plan file goes to a temporary folder and is deleted. Sensitive values are masked.
 - CloudFormation: `DetectStackDrift`, `DescribeStackDriftDetectionStatus`, `DescribeStackResourceDrifts`
   and `ListStacks`. Drift detection records a check on the stack; nothing else changes.

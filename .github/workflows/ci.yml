@@ -39,3 +39,28 @@ jobs:
           test "${{ steps.drift.outputs.high }}" = "3"
           test -s "${{ steps.drift.outputs.report-dir }}/report.html"
           python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['version'] == '2.1.0' and len(d['runs'][0]['results']) == 6" "${{ steps.drift.outputs.sarif-file }}"
+
+  terragrunt:
+    # Real Terragrunt + OpenTofu on a local-state stack (random/local providers, no cloud access):
+    # the last release before the CLI redesign, the first one after, and the current one.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { version: v0.72.6, sha256: df63a41576b8b4129b498da5b698b5792a5a228ea5012bbecdcbe49d4d662be3 }
+          - { version: v0.80.4, sha256: 931cc54bce8626d9d00c6b49d7da794da1f7213220c2ad8a17a1ee6053f2bfec }
+          - { version: v1.2.3, sha256: f55f5943f7a5976b1a3675bbbe540cf81bbba3e415c18e980203f0fd664dae6b }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - uses: opentofu/setup-opentofu@v1
+        with: { tofu_version: 1.10.7, tofu_wrapper: false }
+      - name: Install Terragrunt ${{ matrix.version }}
+        run: |
+          curl -fsSL -o terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/${{ matrix.version }}/terragrunt_linux_amd64"
+          echo "${{ matrix.sha256 }}  terragrunt" | sha256sum -c -
+          sudo install -m 0755 terragrunt /usr/local/bin/terragrunt
+          rm terragrunt
+      - run: pip install .
+      - run: python tests/e2e_terragrunt.py
