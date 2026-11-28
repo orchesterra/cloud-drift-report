@@ -71,6 +71,18 @@ def test_diff_treats_empty_as_missing_and_reports_list_items_whole():
     assert [(c.path, c.before, c.after) for c in removed] == [("rules[1]", {"p": 2}, None)]
 
 
+def test_tags_all_mirror_dropped_but_default_tags_change_kept():
+    mirrored = dr.diff_attributes(
+        {"tags": {"Env": "prod"}, "tags_all": {"Env": "prod", "Owner": "ops"}},
+        {"tags": {"Env": "dev"}, "tags_all": {"Env": "dev", "Owner": "ops"}})
+    assert [(c.path, c.before, c.after) for c in mirrored] == [("tags.Env", "prod", "dev")]
+    both = dr.diff_attributes(
+        {"tags": {"Env": "prod"}, "tags_all": {"Env": "prod", "Owner": "ops"}},
+        {"tags": {"Env": "dev"}, "tags_all": {"Env": "dev", "Owner": "someone"}})
+    assert [(c.path, c.before, c.after) for c in both] == [
+        ("tags.Env", "prod", "dev"), ("tags_all.Owner", "ops", "someone")]
+
+
 def test_empty_drift_and_noop():
     assert dr.parse_plan_json({"format_version": "1.2"}) == []
     assert dr.parse_plan_json({"resource_drift": [{"address": "a", "change": {"actions": ["no-op"]}}]}) == []

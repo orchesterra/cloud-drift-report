@@ -6,8 +6,8 @@
       "tool": {
         "driver": {
           "name": "cloud-drift-report",
-          "version": "0.8.0",
-          "semanticVersion": "0.8.0",
+          "version": "0.9.1",
+          "semanticVersion": "0.9.1",
           "informationUri": "https://github.com/orchesterra/cloud-drift-report",
           "rules": [
             {
