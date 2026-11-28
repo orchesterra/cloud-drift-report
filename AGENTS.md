@@ -11,7 +11,9 @@ Claude reads `skills/cloud-drift-report/SKILL.md` and Cursor reads `cursor/rules
   reading state and stacks, matching).
 - `skills/cloud-drift-report/scripts/drift_ignore.py`: `.driftignore` rules. `tests/fixtures/driftignore_cases.json`
   is shared with OrchesTerra; a syntax change needs a new case there.
-- `tests/`: pytest with fake AWS clients and a fake plan. No network or AWS access.
+- `skills/cloud-drift-report/scripts/notify.py`: `--notify` Slack, Teams and webhook messages.
+- `tests/`: pytest with fake AWS clients and a fake plan. No AWS access; notification tests post to a local
+  HTTP server. `UPDATE_SNAPSHOTS=1 pytest tests/test_notify.py` rewrites the payload snapshots.
 - `examples/`: sample reports. Regenerate with `python3 examples/generate.py` after changing output.
 - `action.yml`: the GitHub Action (installs this repo into its own venv and runs the CLI). CI runs it on
   the sample plan.
@@ -22,7 +24,8 @@ Claude reads `skills/cloud-drift-report/SKILL.md` and Cursor reads `cursor/rules
 - **Read-only, always.** Only List, Describe and Get calls to AWS, `plan -refresh-only -lock=false`,
   `show -json` and `state pull`. Never add `apply`, `import`, `refresh`, state writes, or any AWS call that
   creates, changes or deletes something. CloudFormation `DetectStackDrift` is the one allowed exception.
-- No telemetry and no network calls other than the user's own cloud APIs. `--share` only prints how to open the JSON report in OrchesTerra; the CLI never uploads anything.
+- No telemetry and no network calls other than the user's own cloud APIs and the notification URLs the user
+  names with `--notify` (`scripts/notify.py`; attribute values stay out of messages unless `--notify-values`). `--share` only prints how to open the JSON report in OrchesTerra; the CLI never uploads anything.
 - Never print or save state file contents or credentials.
 - Standard library plus `boto3` only. Python 3.10+.
 - Keep the report footer and the OrchesTerra lines as they are.

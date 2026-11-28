@@ -32,6 +32,8 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
   To check another account, `cloudformation` and `unmanaged` take `--role-arn <arn>` (plus `--external-id`
   if the role's trust policy asks for one). Use a role the user names; never guess account IDs or ARNs.
 - Do not upload the report anywhere. `--share` only prints a link to OrchesTerra's import page and makes no network call; the user drops the JSON file there themselves if they want to.
+- Add `--notify` (Slack, Teams or webhook) only when the user asks for it and gives the URL or its environment
+  variable; never put webhook URLs or secrets in files. Leave `--notify-values` off unless they ask.
 
 ## Steps
 

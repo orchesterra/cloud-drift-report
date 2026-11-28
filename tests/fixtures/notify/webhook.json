@@ -1,0 +1,126 @@
+{
+  "findings": [
+    {
+      "action": "changed outside IaC",
+      "address": "aws_db_instance.main",
+      "changes": [
+        {
+          "path": "password"
+        }
+      ],
+      "explanation": "Password or secret changed outside IaC (a console reset or manual rotation).",
+      "location": "tests/fixtures/refresh_plan.json",
+      "module": "",
+      "physical_id": "main",
+      "severity": "high",
+      "source": "terraform",
+      "state_source": "s3://acme-tf-state/prod/terraform.tfstate",
+      "type": "aws_db_instance"
+    },
+    {
+      "action": "changed outside IaC",
+      "address": "aws_iam_role_policy.app",
+      "changes": [
+        {
+          "path": "policy"
+        }
+      ],
+      "explanation": "Policy or permissions edited outside IaC; review who gained or lost access.",
+      "location": "tests/fixtures/refresh_plan.json",
+      "module": "",
+      "physical_id": "app:app",
+      "severity": "high",
+      "source": "terraform",
+      "state_source": "s3://acme-tf-state/prod/terraform.tfstate",
+      "type": "aws_iam_role_policy"
+    },
+    {
+      "action": "changed outside IaC",
+      "address": "aws_security_group.web",
+      "changes": [
+        {
+          "path": "ingress[1]"
+        }
+      ],
+      "explanation": "Security group rule edited outside IaC and now open to the internet (0.0.0.0/0 or ::/0).",
+      "location": "tests/fixtures/refresh_plan.json",
+      "module": "",
+      "physical_id": "arn:aws:ec2:us-east-1:111122223333:security-group/sg-0a1b2c3d4e5f60718",
+      "severity": "high",
+      "source": "terraform",
+      "state_source": "s3://acme-tf-state/prod/terraform.tfstate",
+      "type": "aws_security_group"
+    },
+    {
+      "action": "changed outside IaC",
+      "address": "aws_instance.worker",
+      "changes": [
+        {
+          "path": "instance_type"
+        }
+      ],
+      "explanation": "Edited outside IaC, likely a console or CLI change to instance_type.",
+      "location": "tests/fixtures/refresh_plan.json",
+      "module": "",
+      "physical_id": "i-0123456789abcdef0",
+      "severity": "medium",
+      "source": "terraform",
+      "state_source": "s3://acme-tf-state/prod/terraform.tfstate",
+      "type": "aws_instance"
+    },
+    {
+      "action": "deleted outside IaC",
+      "address": "aws_sqs_queue.jobs",
+      "changes": [],
+      "explanation": "Deleted outside IaC (console, CLI or another tool); the code still expects it.",
+      "location": "tests/fixtures/refresh_plan.json",
+      "module": "",
+      "physical_id": "arn:aws:sqs:us-east-1:111122223333:jobs",
+      "severity": "medium",
+      "source": "terraform",
+      "state_source": "s3://acme-tf-state/prod/terraform.tfstate",
+      "type": "aws_sqs_queue"
+    },
+    {
+      "action": "changed outside IaC",
+      "address": "aws_s3_bucket.logs",
+      "changes": [
+        {
+          "path": "tags.CostCenter"
+        }
+      ],
+      "explanation": "Tag added outside IaC, often by a person, a cost tool or an AWS service.",
+      "location": "tests/fixtures/refresh_plan.json",
+      "module": "",
+      "physical_id": "acme-logs",
+      "severity": "low",
+      "source": "terraform",
+      "state_source": "s3://acme-tf-state/prod/terraform.tfstate",
+      "type": "aws_s3_bucket"
+    }
+  ],
+  "footer": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs → https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss",
+  "generated_at": "2026-11-28 06:00 UTC",
+  "note": "6 of these can be fixed with a pull request in OrchesTerra (https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).",
+  "notification": {
+    "kinds": {
+      "changed outside IaC": 5,
+      "deleted outside IaC": 1
+    },
+    "run_url": "https://github.com/acme/infra/actions/runs/42",
+    "summary": "6 drifted resources: high 3, medium 2, low 1 (5 changed outside IaC, 1 deleted outside IaC)",
+    "trigger": "drift",
+    "values_included": false
+  },
+  "schema": 1,
+  "source": "terraform",
+  "summary": {
+    "high": 3,
+    "low": 1,
+    "medium": 2,
+    "total": 6
+  },
+  "target": "plan.json",
+  "tool": "cloud-drift-report",
+  "version": "VERSION"
+}

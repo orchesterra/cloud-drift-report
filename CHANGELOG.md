@@ -5,6 +5,24 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+### Added
+- Notifications: `--notify slack|teams|webhook` (may repeat). Slack gets an incoming-webhook message and Teams
+  an Adaptive Card for a Workflows webhook (Office 365 connectors are retired); both carry counts by severity
+  and kind, the account, stacks or directory and state files checked, the top 5 findings with what changed,
+  a link to the GitHub Actions run when there is one, and the report footer. `--notify webhook` POSTs the JSON
+  report plus a `notification` block, signed with HMAC-SHA256 in `X-Drift-Signature` when `--webhook-secret`
+  (or `$WEBHOOK_SECRET`) is set. URLs come from flags or `$SLACK_WEBHOOK_URL`, `$TEAMS_WEBHOOK_URL` and
+  `$WEBHOOK_URL`.
+- `--notify-on drift|always|change`: `change` compares with `--baseline` (a previous JSON report) and sends only
+  when findings are new or resolved.
+- Messages name changed attributes but leave their values out unless `--notify-values` is given. Requests time
+  out, retry with backoff on 429, 5xx and network errors, and print URLs masked. A failed send is a warning and
+  never changes the exit code unless `--notify-strict` is given.
+- `.driftreport.yml` takes the notification settings, with URLs and secrets named by environment variable
+  (`slack-webhook-url-env:` and so on); URLs and secrets written in the file are refused.
+- GitHub Action inputs `notify`, `notify-on`, `slack-webhook-url`, `teams-webhook-url`, `webhook-url` and
+  `webhook-secret`.
+
 ## [0.9.1] - 2026-11-28
 
 ### Fixed
