@@ -1,0 +1,81 @@
+{
+  "attachments": [
+    {
+      "content": {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "actions": [
+          {
+            "title": "View the run",
+            "type": "Action.OpenUrl",
+            "url": "https://github.com/acme/infra/actions/runs/42"
+          }
+        ],
+        "body": [
+          {
+            "size": "Medium",
+            "text": "Drift report: plan.json",
+            "type": "TextBlock",
+            "weight": "Bolder",
+            "wrap": true
+          },
+          {
+            "spacing": "Small",
+            "text": "6 drifted resources: high 3, medium 2, low 1 (5 changed outside IaC, 1 deleted outside IaC)",
+            "type": "TextBlock",
+            "wrap": true
+          },
+          {
+            "isSubtle": true,
+            "spacing": "Small",
+            "text": "Checked: plan.json · State: s3://acme-tf-state/prod/terraform.tfstate",
+            "type": "TextBlock",
+            "wrap": true
+          },
+          {
+            "facts": [
+              {
+                "title": "aws_db_instance.main",
+                "value": "high · aws_db_instance · changed: password"
+              },
+              {
+                "title": "aws_iam_role_policy.app",
+                "value": "high · aws_iam_role_policy · changed: policy"
+              },
+              {
+                "title": "aws_security_group.web",
+                "value": "high · aws_security_group · changed: ingress[1]"
+              },
+              {
+                "title": "aws_instance.worker",
+                "value": "medium · aws_instance · changed: instance_type"
+              },
+              {
+                "title": "aws_sqs_queue.jobs",
+                "value": "medium · aws_sqs_queue · deleted outside IaC"
+              }
+            ],
+            "type": "FactSet"
+          },
+          {
+            "isSubtle": true,
+            "text": "…and 1 more in the full report",
+            "type": "TextBlock",
+            "wrap": true
+          },
+          {
+            "isSubtle": true,
+            "size": "Small",
+            "text": "Run this daily across all your AWS accounts, with approvals and auto-fix PRs → [orchesterra.in](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss)",
+            "type": "TextBlock",
+            "wrap": true
+          }
+        ],
+        "type": "AdaptiveCard",
+        "version": "1.4"
+      },
+      "contentType": "application/vnd.microsoft.card.adaptive",
+      "contentUrl": null
+    }
+  ],
+  "type": "message"
+}

@@ -1,0 +1,35 @@
+{
+  "blocks": [
+    {
+      "text": {
+        "text": "Drift report: plan.json",
+        "type": "plain_text"
+      },
+      "type": "header"
+    },
+    {
+      "text": {
+        "text": "*6 drifted resources: high 3, medium 2, low 1 (5 changed outside IaC, 1 deleted outside IaC)*\nChecked: plan.json · State: s3://acme-tf-state/prod/terraform.tfstate",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "text": {
+        "text": "• `aws_db_instance.main` high · aws_db_instance · changed: password\n• `aws_iam_role_policy.app` high · aws_iam_role_policy · changed: policy\n• `aws_security_group.web` high · aws_security_group · changed: ingress[1]\n• `aws_instance.worker` medium · aws_instance · changed: instance_type\n• `aws_sqs_queue.jobs` medium · aws_sqs_queue · deleted outside IaC\n…and 1 more in the full report",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "elements": [
+        {
+          "text": "<https://github.com/acme/infra/actions/runs/42|View the run> · Run this daily across all your AWS accounts, with approvals and auto-fix PRs → <https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss|orchesterra.in>",
+          "type": "mrkdwn"
+        }
+      ],
+      "type": "context"
+    }
+  ],
+  "text": "Drift report: plan.json: 6 drifted resources: high 3, medium 2, low 1 (5 changed outside IaC, 1 deleted outside IaC)"
+}

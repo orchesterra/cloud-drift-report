@@ -39,3 +39,48 @@ jobs:
           test "${{ steps.drift.outputs.high }}" = "3"
           test -s "${{ steps.drift.outputs.report-dir }}/report.html"
           python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['version'] == '2.1.0' and len(d['runs'][0]['results']) == 6" "${{ steps.drift.outputs.sarif-file }}"
+
+  action-notify:
+    # Runs the action with a webhook notification to a local receiver.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a local webhook receiver
+        run: |
+          cat > "$RUNNER_TEMP/receiver.py" <<'PY'
+          import json, os, sys
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          out = sys.argv[1]
+          class H(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = self.rfile.read(int(self.headers["Content-Length"]))
+                  json.dump({"path": self.path, "signature": self.headers.get("X-Drift-Signature"),
+                             "body": body.decode()}, open(out, "w"))
+                  self.send_response(200); self.end_headers()
+          HTTPServer(("127.0.0.1", 8765), H).serve_forever()
+          PY
+          nohup python3 "$RUNNER_TEMP/receiver.py" "$RUNNER_TEMP/received.json" > /dev/null 2>&1 &
+          sleep 1
+      - uses: ./
+        with:
+          mode: terraform
+          args: --plan-json tests/fixtures/refresh_plan.json
+          fail-on-drift: "false"
+          upload-report: "false"
+          notify: webhook
+          webhook-url: http://127.0.0.1:8765/hook
+          webhook-secret: ci-test-secret
+      - name: Check the notification
+        run: |
+          python3 - "$RUNNER_TEMP/received.json" <<'PY'
+          import hashlib, hmac, json, sys
+          got = json.load(open(sys.argv[1]))
+          body = got["body"].encode()
+          assert got["path"] == "/hook"
+          assert got["signature"] == "sha256=" + hmac.new(b"ci-test-secret", body, hashlib.sha256).hexdigest()
+          doc = json.loads(body)
+          assert doc["summary"]["total"] == 6 and doc["notification"]["trigger"] == "drift"
+          assert doc["notification"]["run_url"].endswith("/actions/runs/${{ github.run_id }}")
+          assert "t3.large" not in got["body"]  # no attribute values by default
+          print("notification ok")
+          PY

@@ -31,7 +31,7 @@ test = ["pytest"]
 # One source file serves the CLI, the Claude skill and the Cursor skill.
 [tool.setuptools]
 package-dir = { "" = "skills/cloud-drift-report/scripts" }
-py-modules = ["drift_report", "aws_inventory", "drift_ignore"]
+py-modules = ["drift_report", "aws_inventory", "drift_ignore", "notify"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

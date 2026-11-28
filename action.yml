@@ -27,6 +27,30 @@ inputs:
     description: "Artifact name for the reports"
     required: false
     default: "cloud-drift-report"
+  notify:
+    description: "Where to send a summary: slack, teams and/or webhook, separated by spaces or commas (default: nowhere)"
+    required: false
+    default: ""
+  notify-on:
+    description: "drift (when anything is found; the default), always, or change (new or resolved findings; add --baseline to args)"
+    required: false
+    default: ""
+  slack-webhook-url:
+    description: "Slack incoming webhook URL; pass a secret, for example secrets.SLACK_WEBHOOK_URL"
+    required: false
+    default: ""
+  teams-webhook-url:
+    description: "Teams Workflows webhook URL (\"When a Teams webhook request is received\"); pass a secret"
+    required: false
+    default: ""
+  webhook-url:
+    description: "URL that receives the JSON report as a POST; pass a secret"
+    required: false
+    default: ""
+  webhook-secret:
+    description: "Signs webhook bodies with HMAC-SHA256 in the X-Drift-Signature header; pass a secret"
+    required: false
+    default: ""
 
 outputs:
   findings:
@@ -60,13 +84,36 @@ runs:
         MODE: ${{ inputs.mode }}
         ARGS: ${{ inputs.args }}
         OUT: ${{ runner.temp }}/cloud-drift-report
+        NOTIFY: ${{ inputs.notify }}
+        NOTIFY_ON: ${{ inputs.notify-on }}
+        IN_SLACK_URL: ${{ inputs.slack-webhook-url }}
+        IN_TEAMS_URL: ${{ inputs.teams-webhook-url }}
+        IN_WEBHOOK_URL: ${{ inputs.webhook-url }}
+        IN_WEBHOOK_SECRET: ${{ inputs.webhook-secret }}
       run: |
         mkdir -p "$OUT"
+        # Inputs override same-named environment variables only when set, and never reach the command line.
+        for pair in SLACK_WEBHOOK_URL:IN_SLACK_URL TEAMS_WEBHOOK_URL:IN_TEAMS_URL WEBHOOK_URL:IN_WEBHOOK_URL \
+                    WEBHOOK_SECRET:IN_WEBHOOK_SECRET; do
+          name="${pair#*:}"
+          value="${!name}"
+          if [ -n "$value" ]; then
+            echo "::add-mask::$value"
+            export "${pair%%:*}=$value"
+          fi
+        done
+        notify_args=()
+        for channel in ${NOTIFY//,/ }; do
+          notify_args+=(--notify "$channel")
+        done
+        if [ -n "$NOTIFY_ON" ]; then
+          notify_args+=(--notify-on "$NOTIFY_ON")
+        fi
         set +e
         # ARGS is split on spaces on purpose so several flags can be passed in one input.
         # shellcheck disable=SC2086
         cloud-drift-report "$MODE" $ARGS -o "$OUT/report.md" -o "$OUT/report.html" -o "$OUT/report.json" \
-          -o "$OUT/report.sarif"
+          -o "$OUT/report.sarif" "${notify_args[@]}"
         code=$?
         set -e
         if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then

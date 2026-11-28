@@ -23,7 +23,8 @@ It ships four ways, from the same code:
 - a **Cursor skill**, plus a Cursor rule for older versions
 - a **GitHub Action** (`orchesterra/cloud-drift-report@v0`)
 
-It never writes to AWS or to Terraform state, sends no telemetry and needs no account.
+It never writes to AWS or to Terraform state, sends no telemetry and needs no account. It sends a
+notification only to a Slack, Teams or webhook URL you give it with `--notify`.
 
 > **Built by [OrchesTerra](https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss).** This free tool is a one-off check from your laptop or CI.
 > OrchesTerra is the cloud platform that runs it continuously across all your AWS accounts and fixes what
@@ -227,6 +228,9 @@ Terraform/OpenTofu drift: add `hashicorp/setup-terraform` or `opentofu/setup-ope
 | `fail-on-drift` | `true` | fail the step when anything is found |
 | `upload-report` | `true` | keep the reports as a workflow artifact |
 | `report-name` | `cloud-drift-report` | the artifact's name |
+| `notify` | | `slack`, `teams` and/or `webhook` (see [Notifications](#notifications-slack-teams-webhook)) |
+| `notify-on` | `drift` | `drift`, `always` or `change` (add `--baseline` to `args`) |
+| `slack-webhook-url`, `teams-webhook-url`, `webhook-url`, `webhook-secret` | | pass from secrets |
 
 Outputs: `findings` (count), `high` (high-severity count), `report-dir` (folder with `report.html`,
 `report.md`, `report.json` and `report.sarif`) and `sarif-file`, for example to post to Slack only when `high`
@@ -299,7 +303,8 @@ cloud-drift-report unmanaged --profile prod --all-regions \
 cloud-drift-report terraform --dir ./infra --fail-on-drift
 ```
 
-Exit codes: `0` ok, `1` error, `2` drift or a resource not in IaC found with `--fail-on-drift`.
+Exit codes: `0` ok, `1` error (or a notification that failed with `--notify-strict`), `2` drift or a resource
+not in IaC found with `--fail-on-drift`.
 
 `--state` takes a local `.tfstate` file, `s3://bucket/key.tfstate`, `s3://bucket/prefix/` (every `.tfstate`
 under it), a Terraform directory or a folder of `.tfstate` files. For a Terraform directory the backend is
@@ -332,6 +337,80 @@ cloudformation:
 Flags on the command line win; a repeatable flag such as `--region` given there replaces the file's list.
 Relative paths are read from the file's folder. `--config FILE` reads another file, and `--no-config` skips it.
 A misspelt key is an error that names it.
+
+## Notifications: Slack, Teams, webhook
+
+`--notify` sends a short summary when the run finds something. It may repeat:
+
+```bash
+# Slack incoming webhook
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/... cloud-drift-report unmanaged --region us-east-1 --notify slack
+
+# Microsoft Teams: a Workflows webhook ("When a Teams webhook request is received"), posted as an Adaptive Card
+TEAMS_WEBHOOK_URL=https://prod-00.westus.logic.azure.com/... cloud-drift-report terraform --dir ./infra --notify teams
+
+# Any URL: POSTs the JSON report, signed with HMAC-SHA256 when a secret is set
+WEBHOOK_URL=https://ops.example.com/drift WEBHOOK_SECRET=... cloud-drift-report cloudformation --notify webhook
+
+# Only when something is new or resolved since the last run's JSON report
+cloud-drift-report terraform --dir ./infra -o today.json --notify slack --notify-on change --baseline yesterday.json
+```
+
+| Flag | |
+|---|---|
+| `--notify slack\|teams\|webhook` | where to send; may repeat |
+| `--slack-webhook-url`, `--teams-webhook-url`, `--webhook-url` | the URLs (default: `$SLACK_WEBHOOK_URL`, `$TEAMS_WEBHOOK_URL`, `$WEBHOOK_URL`) |
+| `--webhook-secret` | HMAC-SHA256 key for the `X-Drift-Signature: sha256=<hex>` header (default: `$WEBHOOK_SECRET`) |
+| `--notify-on drift\|always\|change` | `drift` (default) when anything is found; `always`; `change` only for new or resolved findings compared with `--baseline` |
+| `--baseline FILE` | a previous JSON report (`-o report.json`); a missing file counts as empty, so the first run sends everything |
+| `--notify-values` | include attribute values; by default messages name the attributes that changed but not their values, which can be secrets |
+| `--notify-strict` | exit `1` when a notification can't be sent; otherwise a failed send is a warning and the scan's result stands |
+| `--notify-timeout` | seconds per request (default 10) |
+
+Slack and Teams get the counts by severity and kind, the account, stacks or directory checked and the state
+files, the top 5 findings (address, severity, type and what changed), a link to the GitHub Actions run when
+there is one, and the report footer. The webhook gets the same document as `-f json` (with values left out
+unless `--notify-values`) plus a `notification` block:
+
+```json
+{
+  "tool": "cloud-drift-report", "source": "terraform", "target": "infra",
+  "summary": {"total": 6, "high": 3, "medium": 2, "low": 1},
+  "findings": [{"address": "aws_security_group.web", "severity": "high", "changes": [{"path": "ingress[1]"}], "...": "..."}],
+  "notification": {"trigger": "change", "summary": "6 drifted resources: high 3, medium 2, low 1 (...)",
+                   "new": [], "resolved": [], "values_included": false,
+                   "run_url": "https://github.com/acme/infra/actions/runs/42"}
+}
+```
+
+To check a signature, compute HMAC-SHA256 of the raw request body with the secret and compare it with the
+header after `sha256=`. Requests time out after `--notify-timeout` seconds and are retried three times with
+backoff on HTTP 429 (honouring `Retry-After`), 5xx and network errors; other 4xx answers are not retried. URLs
+are printed only as `https://host/***`.
+
+In `.driftreport.yml`, keep URLs and secrets out of the file: name the environment variables instead.
+`slack-webhook-url:`, `teams-webhook-url:`, `webhook-url:` and `webhook-secret:` are refused there.
+
+```yaml
+notify: [slack, webhook]
+notify-on: change
+baseline: drift-previous.json
+slack-webhook-url-env: PROD_SLACK_WEBHOOK   # the variable that holds the URL
+webhook-url-env: DRIFT_HOOK_URL
+webhook-secret-env: DRIFT_HOOK_SECRET
+```
+
+In the GitHub Action, pass the URLs as secrets:
+
+```yaml
+      - uses: orchesterra/cloud-drift-report@v0
+        with:
+          mode: unmanaged
+          args: --region us-east-1 --state s3://acme-tf-state/prod/
+          notify: slack teams
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          teams-webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+```
 
 ## Bringing resources into Terraform: import blocks
 
@@ -435,6 +514,8 @@ Regenerate them with `python3 examples/generate.py`.
   files you name. When something idle is found, `pricing:GetProducts` reads its region's price.
   `cloudwatch:GetMetricData` reads routed NAT gateways' traffic. State files
   are read in memory and never printed or saved.
+- Network: only your cloud's APIs, plus the Slack, Teams or webhook URLs you name with `--notify`. Messages
+  leave attribute values out unless you add `--notify-values`.
 - Uses your own credentials (see [Credentials](#credentials)). The AWS managed `ReadOnlyAccess` policy is enough, plus
   `cloudformation:DetectStackDrift` for CloudFormation drift and whatever read permissions your Terraform
   provider needs to refresh.

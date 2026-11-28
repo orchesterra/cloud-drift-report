@@ -1180,6 +1180,9 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--config", metavar="FILE",
                         help=f"read defaults from this file (default: {CONFIG_NAMES[0]} in --dir or the current directory)")
     common.add_argument("--no-config", action="store_true", help=f"don't read {CONFIG_NAMES[0]}")
+    import notify
+
+    notify.add_args(common)
     sub = p.add_subparsers(dest="mode", required=True)
 
     tf = sub.add_parser("terraform", aliases=["tf", "tofu"], parents=[common],
@@ -1415,7 +1418,7 @@ def ignore_files(args) -> list[str]:
 CONFIG_NAMES = (".driftreport.yml", ".driftreport.yaml")
 CONFIG_SECTIONS = {"terraform": "terraform", "tf": "terraform", "tofu": "terraform", "cloudformation": "cloudformation",
                    "cfn": "cloudformation", "unmanaged": "unmanaged", "scan": "unmanaged"}
-_CONFIG_PATHS = {"output", "ignore", "var_file", "dir", "plan_json", "state"}  # relative to the config file
+_CONFIG_PATHS = {"output", "ignore", "var_file", "dir", "plan_json", "state", "baseline"}  # relative to the config file
 
 
 def config_path(args) -> str | None:
@@ -1467,6 +1470,12 @@ def apply_config(parser: argparse.ArgumentParser, argv: list[str] | None, args) 
         if dest not in mine:
             raise ValueError(f"{path}: `{key}` isn't a {mode} option")
         wanted[dest] = value
+    import notify
+
+    for dest in wanted:
+        if dest in notify.SECRET_DESTS:
+            raise ValueError(f"{path}: don't put `{dest.replace('_', '-')}` in a file; set an environment variable "
+                             f"and name it with `{dest.replace('_', '-')}-env`")
     base = os.path.dirname(path)
     defaults = {}
     for dest, value in wanted.items():
@@ -1502,6 +1511,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if used_config:
         print(f"using {os.path.relpath(used_config)}", file=sys.stderr)
+    import notify
+
+    problem = notify.check_args(args)
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 1
     try:
         if args.mode in ("terraform", "tf", "tofu"):
             if args.plan_json:
@@ -1568,6 +1583,8 @@ def main(argv: list[str] | None = None) -> int:
         share_report(json_paths)
     elif json_paths and report.findings:
         print(import_hint(json_paths[0]), file=sys.stderr)
+    if notify.run(report, args):
+        return 1
     return 2 if args.fail_on_drift and report.findings else 0
 
 
