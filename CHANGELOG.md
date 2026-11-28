@@ -5,6 +5,12 @@ the GitHub Action's `v0` tag always points at the latest 0.x release.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-28
+
+### Fixed
+- A change to a provider `default_tags` key is no longer hidden when the same edit also changes `tags`. A
+  `tags_all` row is now dropped only when `tags` shows the same key with the same before and after values.
+
 ## [0.9.0] - 2026-11-26
 
 ### Added
@@ -195,7 +201,9 @@ First release on PyPI.
 - Markdown, CSV, JSON and HTML output. `-o` may repeat, and each file's extension picks its format.
 - Claude skill and Cursor rule.
 
-[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/orchesterra/cloud-drift-report/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/orchesterra/cloud-drift-report/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/orchesterra/cloud-drift-report/compare/v0.6.2...v0.7.0

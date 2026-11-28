@@ -1,6 +1,6 @@
 {
   "tool": "cloud-drift-report",
-  "version": "0.8.0",
+  "version": "0.9.1",
   "source": "terraform",
   "target": "./infra/prod",
   "schema": 1,

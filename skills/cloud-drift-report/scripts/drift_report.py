@@ -35,7 +35,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 PRODUCT_URL = "https://www.orchesterra.in/?utm_source=drift-skill&utm_medium=oss"
 FOOTER = f"Run this daily across all your AWS accounts, with approvals and auto-fix PRs → {PRODUCT_URL}"
@@ -293,15 +293,24 @@ def _diff(b: Any, a: Any, path: str, out: list[Change]) -> None:
     out.append(Change(path, None if _blank(b) else b, None if _blank(a) else a))
 
 
+def _drop_mirrored_tags_all(changes: list[Change]) -> list[Change]:
+    """tags_all is tags plus provider default_tags, so one tag edit shows as tags.X and tags_all.X.
+    Drop the tags_all row only when tags has the same key with the same before/after;
+    a tags_all key with no tags row (a default_tags key) stays."""
+    tag_rows = {c.path[len("tags"):]: (c.before, c.after) for c in changes
+                if c.path == "tags" or c.path.startswith("tags.")}
+    if not tag_rows:
+        return changes
+    return [c for c in changes
+            if not ((c.path == "tags_all" or c.path.startswith("tags_all."))
+                    and tag_rows.get(c.path[len("tags_all"):], object()) == (c.before, c.after))]
+
+
 def diff_attributes(before: Any, after: Any, before_sensitive: Any = None,
                     after_sensitive: Any = None) -> list[Change]:
-    b, a = dict(before or {}), dict(after or {})
-    # tags_all mirrors tags plus provider default tags; show it only when tags itself didn't change.
-    if b.get("tags") != a.get("tags"):
-        b.pop("tags_all", None)
-        a.pop("tags_all", None)
     changes: list[Change] = []
-    _diff(b, a, "", changes)
+    _diff(dict(before or {}), dict(after or {}), "", changes)
+    changes = _drop_mirrored_tags_all(changes)
     sensitive = _sensitive_paths(before_sensitive or {}) | _sensitive_paths(after_sensitive or {})
     for c in changes:
         if _masked(c.path, sensitive):

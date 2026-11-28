@@ -1,6 +1,6 @@
 {
   "tool": "cloud-drift-report",
-  "version": "0.8.0",
+  "version": "0.9.1",
   "source": "aws",
   "target": "111111111111 (us-east-1)",
   "schema": 1,
