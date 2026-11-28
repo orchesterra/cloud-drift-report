@@ -72,6 +72,23 @@ does manage are named in the coverage line ("Idle and still billing: ...") and i
 since being in code doesn't make them free. Each of those says which state file and module manages it
 (`state_source`, `address`, `module`), or which stack.
 
+**End of life.** The scan also warns about versions AWS is retiring or already charging extended support for:
+RDS and Aurora MySQL/PostgreSQL engine versions (dates from `rds:DescribeDBMajorEngineVersions`), EKS
+Kubernetes versions (`eks:DescribeClusterVersions`, and the cluster's upgrade policy) and Lambda runtimes.
+Each row is **past end of life** (high: extended support over, a deprecated Lambda runtime, or standard support
+over with extended support turned off, so AWS will upgrade it), **in paid extended support** (medium) or
+**ends within 90 days** (low). Extended support is priced from the Price List API: per vCPU-hour of the DB
+instance (twice for Multi-AZ; vCPUs from `ec2:DescribeInstanceTypes`), per ACU-hour at the minimum capacity
+for Aurora Serverless v2, and per cluster-hour for EKS; for "ends within 90 days" it is what would bill from
+that date. Lambda's deprecation dates aren't in any API, so they come from
+[AWS's runtime table](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html), copied into
+`eol.py` with the date it was checked; `--eol-data FILE` lays your own JSON over it
+(`{"lambda_runtimes": {"python3.12": {"deprecation": "2028-10-31", "block_create": "...", "block_update": "..."}}}`).
+`--eol-only` runs just this check (no listing of the account); `--no-eol` skips it. A service you can't read
+is named under "Not checked" and the others still count. `.driftignore` rules apply (by type, name, ARN, or
+tag for RDS and EKS). It is a section of its own in every format, and the rule `drift/end-of-life` in SARIF;
+`--fail-on-drift` counts it only with `--eol-only`.
+
 When a resource you expect to be in IaC is reported anyway, `--explain TEXT` says, for each listed resource
 whose ID, name or ARN contains TEXT, what it matched or why it didn't: no state entry of that type, an entry
 recorded for another region, or the values it looked for.
@@ -260,7 +277,7 @@ so findings show up as code scanning alerts on the repository and on pull reques
 
 Without the action: `cloud-drift-report terraform --dir ./infra -o drift.sarif`, then upload `drift.sarif`.
 Each kind of finding is its own rule (`drift/changed-outside-iac`, `drift/deleted-outside-iac`,
-`drift/not-in-iac`, `drift/idle-not-in-iac`, `drift/aws-created`, `drift/idle-in-iac`); the alert level follows
+`drift/not-in-iac`, `drift/idle-not-in-iac`, `drift/aws-created`, `drift/idle-in-iac`, `drift/end-of-life`); the alert level follows
 severity (high = error, medium = warning, low = note) and the message is the Markdown report's text. A
 Terraform finding points at the `.tf` file and line with its `resource "type" "name"` block when one is found
 under `--dir` (resources in modules are looked up through `.terraform/modules/modules.json`, written by
@@ -433,7 +450,10 @@ Regenerate them with `python3 examples/generate.py`.
 - Not in IaC: only List, Describe and Get calls (Cloud Control `ListResources`, plus a few service list calls
   such as `ec2:DescribeVpcs` and `iam:ListRoles`), `cloudformation:ListStackResources`, and reads of the state
   files you name. When something idle is found, `pricing:GetProducts` reads its region's price.
-  `cloudwatch:GetMetricData` reads routed NAT gateways' traffic. State files
+  `cloudwatch:GetMetricData` reads routed NAT gateways' traffic. The end-of-life check calls
+  `rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `rds:DescribeDBMajorEngineVersions`,
+  `ec2:DescribeInstanceTypes`, `eks:ListClusters`, `eks:DescribeCluster`, `eks:DescribeClusterVersions` and
+  `lambda:ListFunctions`. State files
   are read in memory and never printed or saved.
 - Uses your own credentials (see [Credentials](#credentials)). The AWS managed `ReadOnlyAccess` policy is enough, plus
   `cloudformation:DetectStackDrift` for CloudFormation drift and whatever read permissions your Terraform

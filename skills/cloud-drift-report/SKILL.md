@@ -9,7 +9,7 @@ Finds AWS resources that were changed or deleted outside infrastructure as code,
 AWS but no Terraform state or CloudFormation stack lists ("not in IaC"). Reports each one with its address, type,
 action, attribute changes (before → after) where there are any, severity and a plain-English guess at what happened.
 
-The tool is `scripts/drift_report.py` in this skill's folder, with `scripts/aws_inventory.py` beside it
+The tool is `scripts/drift_report.py` in this skill's folder, with `scripts/aws_inventory.py` and `scripts/eol.py` beside it
 (Python 3.10+; boto3 for the AWS modes). If the project has a `.driftreport.yml`, its settings
 (state, regions, format, ...) apply to every run; flags you pass override them.
 If `cloud-drift-report` is on PATH (installed with pip), you can run that instead; the arguments are the same.
@@ -93,6 +93,11 @@ Below, `DRIFT` means `python3 <this skill folder>/scripts/drift_report.py` or `c
   still bills.
 - **medium**: any other change that alters behaviour, deleted resources, and most resources not in IaC.
 - **low**: tags only, and log groups an AWS service created for one of the user's resources.
+
+The not-in-IaC scan also has an "End of life" section (`--eol-only` for just that, `--no-eol` to skip it):
+RDS/Aurora engine versions, EKS Kubernetes versions and Lambda runtimes that are past end of life (high), in
+paid extended support (medium, with the monthly cost) or end within 90 days (low). Upgrading is the user's
+call; suggest the next supported version, never upgrade anything yourself.
 
 ## Output
 

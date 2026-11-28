@@ -129,6 +129,26 @@
                   "iac"
                 ]
               }
+            },
+            {
+              "id": "drift/end-of-life",
+              "name": "EndOfLife",
+              "shortDescription": {
+                "text": "Version past or near end of life"
+              },
+              "fullDescription": {
+                "text": "The resource runs an engine, Kubernetes or runtime version that AWS has retired, bills extended support for, or retires within 90 days. Upgrade it."
+              },
+              "helpUri": "https://github.com/orchesterra/cloud-drift-report#readme",
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "properties": {
+                "tags": [
+                  "drift",
+                  "iac"
+                ]
+              }
             }
           ]
         }
